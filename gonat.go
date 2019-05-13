@@ -64,6 +64,7 @@ type server struct {
 
 	downstream io.ReadWriter
 	opts       *Opts
+	ifAddr     string
 	bufferPool *bpool.BytePool
 	// udpTransport io.ReadWriteCloser
 	tcpTransport    *transport
@@ -80,8 +81,8 @@ type conn struct {
 }
 
 type Opts struct {
-	// IFAddr is the address of the interface to use for connecting upstream
-	IFAddr string
+	// IFName is the name of the interface to use for connecting upstream
+	IFName string
 
 	// MTU in bytes. Default of 1500 is usually fine.
 	MTU int
@@ -145,13 +146,38 @@ func (opts *Opts) ApplyDefaults() *Opts {
 func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 	opts.ApplyDefaults()
 
-	tcpTransport, err := createTransport(syscall.IPPROTO_TCP)
+	outIF, err := net.InterfaceByName(opts.IFName)
+	if err != nil {
+		return nil, errors.New("Unable to find interface for interface %v: %v", opts.IFName, err)
+	}
+	outIFAddrs, err := outIF.Addrs()
+	if err != nil {
+		return nil, errors.New("Unable to get addresses for interface %v: %v", opts.IFName, err)
+	}
+	ifAddr := ""
+	for _, outIFAddr := range outIFAddrs {
+		switch t := outIFAddr.(type) {
+		case *net.IPNet:
+			ipv4 := t.IP.To4()
+			if ipv4 != nil {
+				ifAddr = ipv4.String()
+				break
+			}
+		}
+	}
+	if ifAddr == "" {
+		return nil, errors.New("Unable to find IPv4 address for interface %v", opts.IFName)
+	}
+	log.Debugf("Outbound packets will use %v", ifAddr)
+
+	tcpTransport, err := createTransport(opts.IFName, syscall.IPPROTO_TCP)
 	if err != nil {
 		return nil, errors.New("Unable to create TCP transport: %v", err)
 	}
 	s := &server{
 		downstream:      downstream,
 		opts:            opts,
+		ifAddr:          ifAddr,
 		bufferPool:      bpool.NewBytePool(opts.BufferPoolSize/opts.MTU, opts.MTU),
 		tcpTransport:    tcpTransport,
 		fromDownstream:  make(chan *IPPacket, 2500),
@@ -204,6 +230,7 @@ func (s *server) dispatch() {
 					tcpPorts[port] = ft
 					s.addTCPConn()
 				}
+				pkt.SetSource(s.ifAddr, c.port)
 				s.opts.OnOutbound(pkt, ft, c.port)
 				pkt.recalcTCPChecksum()
 				pkt.recalcIPChecksum()
@@ -236,6 +263,7 @@ func (s *server) dispatch() {
 	}
 }
 
+// readFromDownstream reads all IP packets from downstream clients.
 func (s *server) readFromDownstream() error {
 	for {
 		b := s.bufferPool.Get()
@@ -257,6 +285,10 @@ func (s *server) readFromDownstream() error {
 	}
 }
 
+// readFromUpstreamTCP reads all packets coming from upstream TCP connections.
+// Because we're using raw sockets, this captures inbound packets from other
+// TCP connections on the machine. Those get ignored inside the `dispatch` loop
+// because their ports won't match one of our mapped ports.
 func (s *server) readFromUpstreamTCP() {
 	for {
 		b := s.bufferPool.Get()
@@ -277,6 +309,7 @@ func (s *server) readFromUpstreamTCP() {
 	}
 }
 
+// writeToDownstream writes all IP packets that we're sending back dowstream.
 func (s *server) writeToDownstream() {
 	for pkt := range s.toDownstream {
 		_, err := s.downstream.Write(pkt.Raw)
@@ -288,6 +321,8 @@ func (s *server) writeToDownstream() {
 	}
 }
 
+// writeToUpstreamTCP writes all IP packets that we're sending to all upstream
+// TCP hosts.
 func (s *server) writeToUpstreamTCP() {
 	for pkt := range s.toUpstreamTCP {
 		err := s.tcpTransport.Write(pkt)
@@ -303,7 +338,12 @@ func (s *server) Close() error {
 	return nil
 }
 
-func createTransport(proto int) (*transport, error) {
+// createTransports creates a raw socket for either TCP or UDP type
+// (depending no the specified proto). This socket is used to send all IP
+// packets that we're handling upstream as well as to read all IP packets
+// from upstream. Because it's a raw socket, we also get packets for other
+// applications, which we just ignore later.
+func createTransport(ifName string, proto int) (*transport, error) {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, proto)
 	if err != nil {
 		return nil, errors.New("Unable to create transport: %v", err)
@@ -311,7 +351,7 @@ func createTransport(proto int) (*transport, error) {
 	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_HDRINCL, 1); err != nil {
 		return nil, errors.New("Unable to set IP_HDRINCL: %v", err)
 	}
-	if err := syscall.BindToDevice(fd, "wlp107s0"); err != nil {
+	if err := syscall.BindToDevice(fd, ifName); err != nil {
 		return nil, errors.New("Unable to bind to interface: %v", err)
 	}
 	err = unix.SetNonblock(fd, true)
@@ -332,7 +372,7 @@ func (s *server) bindTCPSocket() (io.Closer, uint16, error) {
 		return nil, 0, errors.New("Unable to create TCP socket: %v", err)
 	}
 	var addr [4]byte
-	copy(addr[:], net.ParseIP(s.opts.IFAddr).To4())
+	copy(addr[:], net.ParseIP(s.ifAddr).To4())
 	bindAddr := &syscall.SockaddrInet4{
 		Addr: addr,
 		Port: 0, // let OS pick a port for us

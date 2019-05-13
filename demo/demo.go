@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -61,30 +60,6 @@ func main() {
 	}
 	defer dev.Close()
 
-	outIF, err := net.InterfaceByName(*ifOut)
-	if err != nil {
-		log.Fatal(err)
-	}
-	outIFAddrs, err := outIF.Addrs()
-	if err != nil {
-		log.Fatal(err)
-	}
-	ifAddr := ""
-	for _, outIFAddr := range outIFAddrs {
-		switch t := outIFAddr.(type) {
-		case *net.IPNet:
-			ipv4 := t.IP.To4()
-			if ipv4 != nil {
-				ifAddr = ipv4.String()
-				break
-			}
-		}
-	}
-	if ifAddr == "" {
-		log.Fatalf("Unable to get IPv4 address for interface %v", *ifOut)
-	}
-	log.Debugf("Outbound packets will use %v", ifAddr)
-
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch,
 		syscall.SIGHUP,
@@ -99,10 +74,9 @@ func main() {
 	}()
 
 	s, err := gonat.NewServer(dev, &gonat.Opts{
-		IFAddr: ifAddr,
+		IFName: *ifOut,
 		OnOutbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple, boundPort uint16) {
 			pkt.SetDest("80.249.99.148", 80)
-			pkt.SetSource(ifAddr, boundPort)
 		},
 		OnInbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple, boundPort uint16) {
 			pkt.SetDest(ft.Src.IP, ft.Src.Port)
