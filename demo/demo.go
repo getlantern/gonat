@@ -100,6 +100,14 @@ func main() {
 
 	s, err := gonat.NewServer(dev, &gonat.Opts{
 		IFAddr: ifAddr,
+		OnOutbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple, boundPort uint16) {
+			pkt.SetDest("80.249.99.148", 80)
+			pkt.SetSource(ifAddr, boundPort)
+		},
+		OnInbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple, boundPort uint16) {
+			pkt.SetDest(ft.Src.IP, ft.Src.Port)
+			pkt.SetSource("10.0.0.1", ft.Dst.Port)
+		},
 	})
 	if err != nil {
 		log.Fatal(err)

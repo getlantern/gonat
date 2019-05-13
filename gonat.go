@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	// DefaultMTU is 60000 to accomodate large segments
-	DefaultMTU = 60000
+	// DefaultMTU is 65536 to accomodate large segments
+	DefaultMTU = 65536
 
 	// DefaultBufferPoolSize is 10 MB
 	DefaultBufferPoolSize = 10000000
@@ -67,10 +67,10 @@ type server struct {
 	bufferPool *bpool.BytePool
 	// udpTransport io.ReadWriteCloser
 	tcpTransport    *transport
-	fromDownstream  chan *ipPacket
-	toUpstreamTCP   chan *ipPacket
-	fromUpstreamTCP chan *ipPacket
-	toDownstream    chan *ipPacket
+	fromDownstream  chan *IPPacket
+	toUpstreamTCP   chan *IPPacket
+	fromUpstreamTCP chan *IPPacket
+	toDownstream    chan *IPPacket
 	close           chan interface{}
 }
 
@@ -101,9 +101,15 @@ type Opts struct {
 	// seconds.
 	StatsInterval time.Duration
 
-	onOutbound func(pkt *ipPacket)
+	// OnOutbound allows modifying outbound ip packets. ft is the fourtuple to
+	// which the current connection/UDP port mapping is keyed. boundPort is the
+	// port number on which we'll send the outbound packet.
+	OnOutbound func(pkt *IPPacket, ft FourTuple, boundPort uint16)
 
-	onInbound func(pkt *ipPacket)
+	// OnInbound allows modifying inbound ip packets. ft is the fourtuple to
+	// which the current connection/UDP port mapping is keyed. boundPort is the
+	// port number on which we received the inbound packet.
+	OnInbound func(pkt *IPPacket, ft FourTuple, boundPort uint16)
 }
 
 // ApplyDefaults applies the default values to the given Opts, including making
@@ -127,11 +133,11 @@ func (opts *Opts) ApplyDefaults() *Opts {
 	if opts.StatsInterval <= 0 {
 		opts.StatsInterval = DefaultStatsInterval
 	}
-	if opts.onOutbound == nil {
-		opts.onOutbound = func(pkt *ipPacket) {}
+	if opts.OnOutbound == nil {
+		opts.OnOutbound = func(pkt *IPPacket, ft FourTuple, boundPort uint16) {}
 	}
-	if opts.onInbound == nil {
-		opts.onInbound = func(pkt *ipPacket) {}
+	if opts.OnInbound == nil {
+		opts.OnInbound = func(pkt *IPPacket, ft FourTuple, boundPort uint16) {}
 	}
 	return opts
 }
@@ -148,10 +154,10 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 		opts:            opts,
 		bufferPool:      bpool.NewBytePool(opts.BufferPoolSize/opts.MTU, opts.MTU),
 		tcpTransport:    tcpTransport,
-		fromDownstream:  make(chan *ipPacket, 2500),
-		toUpstreamTCP:   make(chan *ipPacket, 2500),
-		fromUpstreamTCP: make(chan *ipPacket, 2500),
-		toDownstream:    make(chan *ipPacket, 2500),
+		fromDownstream:  make(chan *IPPacket, 2500),
+		toUpstreamTCP:   make(chan *IPPacket, 2500),
+		fromUpstreamTCP: make(chan *IPPacket, 2500),
+		toDownstream:    make(chan *IPPacket, 2500),
 		close:           make(chan interface{}),
 	}
 	return s, nil
@@ -170,14 +176,14 @@ func (s *server) dispatch() {
 	reapTicker := time.NewTicker(1 * time.Second)
 	defer reapTicker.Stop()
 
-	tcpConns := make(map[fourtuple]*conn)
-	tcpPorts := make(map[uint16]fourtuple)
+	tcpConns := make(map[FourTuple]*conn)
+	tcpPorts := make(map[uint16]FourTuple)
 	for {
 		select {
 		case pkt := <-s.fromDownstream:
-			switch pkt.ipProto {
+			switch pkt.IPProto {
 			case syscall.IPPROTO_TCP:
-				ft := pkt.ft()
+				ft := pkt.FT()
 				c := tcpConns[ft]
 				if c == nil {
 					// In order to keep the kernel from sending RST packets in response to packets from upstream,
@@ -198,27 +204,25 @@ func (s *server) dispatch() {
 					tcpPorts[port] = ft
 					s.addTCPConn()
 				}
-				pkt.setDest("80.249.99.148", 80)
-				pkt.setSource(s.opts.IFAddr, c.port)
+				s.opts.OnOutbound(pkt, ft, c.port)
 				pkt.recalcTCPChecksum()
 				pkt.recalcIPChecksum()
 				s.acceptedPacket()
 				s.toUpstreamTCP <- pkt
 			default:
 				s.rejectedPacket()
-				log.Tracef("Unknown IP protocol, ignoring: %v", pkt.ipProto)
+				log.Tracef("Unknown IP protocol, ignoring: %v", pkt.IPProto)
 				continue
 			}
 		case pkt := <-s.fromUpstreamTCP:
-			port := pkt.ft().dst.port
+			port := pkt.FT().Dst.Port
 			ft, found := tcpPorts[port]
 			if !found {
 				s.rejectedPacket()
 				log.Tracef("Unknown connection, dropping response packet: %d", port)
 				continue
 			}
-			pkt.setDest(ft.src.ip, ft.src.port)
-			pkt.setSource("10.0.0.1", ft.dst.port)
+			s.opts.OnInbound(pkt, ft, port)
 			pkt.recalcTCPChecksum()
 			pkt.recalcIPChecksum()
 			s.acceptedPacket()
@@ -275,8 +279,8 @@ func (s *server) readFromUpstreamTCP() {
 
 func (s *server) writeToDownstream() {
 	for pkt := range s.toDownstream {
-		_, err := s.downstream.Write(pkt.raw)
-		s.bufferPool.Put(pkt.raw)
+		_, err := s.downstream.Write(pkt.Raw)
+		s.bufferPool.Put(pkt.Raw)
 		if err != nil {
 			log.Errorf("Unexpected error writing to downstream: %v", err)
 			return
@@ -287,7 +291,7 @@ func (s *server) writeToDownstream() {
 func (s *server) writeToUpstreamTCP() {
 	for pkt := range s.toUpstreamTCP {
 		err := s.tcpTransport.Write(pkt)
-		s.bufferPool.Put(pkt.raw)
+		s.bufferPool.Put(pkt.Raw)
 		if err != nil {
 			log.Errorf("Unexpected error writing to upstream TCP: %v", err)
 			return
@@ -352,9 +356,9 @@ type transport struct {
 	fd int
 }
 
-func (tr *transport) Write(pkt *ipPacket) error {
+func (tr *transport) Write(pkt *IPPacket) error {
 	var addr [4]byte
-	copy(addr[:], pkt.dstAddr.IP.To4())
-	sockAddr := &unix.SockaddrInet4{Port: int(pkt.ft().dst.port), Addr: addr}
-	return unix.Sendto(tr.fd, pkt.raw, 0, sockAddr)
+	copy(addr[:], pkt.DstAddr.IP.To4())
+	sockAddr := &unix.SockaddrInet4{Port: int(pkt.FT().Dst.Port), Addr: addr}
+	return unix.Sendto(tr.fd, pkt.Raw, 0, sockAddr)
 }
