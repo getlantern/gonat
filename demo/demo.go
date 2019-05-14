@@ -75,10 +75,10 @@ func main() {
 
 	s, err := gonat.NewServer(dev, &gonat.Opts{
 		IFName: *ifOut,
-		OnOutbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple, boundPort uint16) {
+		OnOutbound: func(pkt *gonat.IPPacket) {
 			pkt.SetDest("80.249.99.148", 80)
 		},
-		OnInbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple, boundPort uint16) {
+		OnInbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple) {
 			pkt.SetDest(ft.Src.IP, ft.Src.Port)
 			pkt.SetSource("10.0.0.1", ft.Dst.Port)
 		},

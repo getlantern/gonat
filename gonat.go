@@ -5,11 +5,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/coreos/go-iptables/iptables"
 	"github.com/getlantern/errors"
 	"github.com/getlantern/golog"
 	"github.com/oxtoacart/bpool"
@@ -102,15 +104,12 @@ type Opts struct {
 	// seconds.
 	StatsInterval time.Duration
 
-	// OnOutbound allows modifying outbound ip packets. ft is the fourtuple to
-	// which the current connection/UDP port mapping is keyed. boundPort is the
-	// port number on which we'll send the outbound packet.
-	OnOutbound func(pkt *IPPacket, ft FourTuple, boundPort uint16)
+	// OnOutbound allows modifying outbound ip packets.
+	OnOutbound func(pkt *IPPacket)
 
 	// OnInbound allows modifying inbound ip packets. ft is the fourtuple to
-	// which the current connection/UDP port mapping is keyed. boundPort is the
-	// port number on which we received the inbound packet.
-	OnInbound func(pkt *IPPacket, ft FourTuple, boundPort uint16)
+	// which the current connection/UDP port mapping is keyed.
+	OnInbound func(pkt *IPPacket, ft FourTuple)
 }
 
 // ApplyDefaults applies the default values to the given Opts, including making
@@ -135,10 +134,10 @@ func (opts *Opts) ApplyDefaults() *Opts {
 		opts.StatsInterval = DefaultStatsInterval
 	}
 	if opts.OnOutbound == nil {
-		opts.OnOutbound = func(pkt *IPPacket, ft FourTuple, boundPort uint16) {}
+		opts.OnOutbound = func(pkt *IPPacket) {}
 	}
 	if opts.OnInbound == nil {
-		opts.OnInbound = func(pkt *IPPacket, ft FourTuple, boundPort uint16) {}
+		opts.OnInbound = func(pkt *IPPacket, ft FourTuple) {}
 	}
 	return opts
 }
@@ -202,6 +201,11 @@ func (s *server) dispatch() {
 	reapTicker := time.NewTicker(1 * time.Second)
 	defer reapTicker.Stop()
 
+	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	if err != nil {
+		log.Errorf("Unable to prepare iptables: %v", err)
+		return
+	}
 	tcpConns := make(map[FourTuple]*conn)
 	tcpPorts := make(map[uint16]FourTuple)
 	for {
@@ -209,19 +213,17 @@ func (s *server) dispatch() {
 		case pkt := <-s.fromDownstream:
 			switch pkt.IPProto {
 			case syscall.IPPROTO_TCP:
+				s.opts.OnOutbound(pkt)
 				ft := pkt.FT()
 				c := tcpConns[ft]
 				if c == nil {
-					// In order to keep the kernel from sending RST packets in response to packets from upstream,
-					// we need to bind a TCP socket. We'll never actually read from this socket, but we use its
-					// port to uniquely identify this TCP connection. We close the socket when we're finished with this
-					// connection.
+					// Bind a socket to get an ephemeral port
 					socket, port, err := s.bindTCPSocket()
 					if err != nil {
 						log.Errorf("Unable to reserve tcp port, dropping packet: %v", err)
 						continue
 					}
-					socket.Close()
+					// TODO: actually close the socket when we're done with the ephemeral port
 					c = &conn{
 						Closer: socket,
 						port:   port,
@@ -229,9 +231,15 @@ func (s *server) dispatch() {
 					tcpConns[ft] = c
 					tcpPorts[port] = ft
 					s.addTCPConn()
+					// Drop RST packets originating from our ephemeral port so that when the kernel automatically
+					// generates an RST in response to the unexpected SYN,ACK from upstream, we don't actually
+					// kill the connection.
+					// TODO: remove this rule when we're done with this ephemeral port and make sure that a final RST does get sent.
+					if err := ipt.Append("filter", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--source", s.ifAddr, "--source-port", strconv.Itoa(int(port)), "-j", "DROP"); err != nil {
+						log.Errorf("Error updating iptables: %v", err)
+					}
 				}
 				pkt.SetSource(s.ifAddr, c.port)
-				s.opts.OnOutbound(pkt, ft, c.port)
 				pkt.recalcTCPChecksum()
 				pkt.recalcIPChecksum()
 				s.acceptedPacket()
@@ -249,7 +257,7 @@ func (s *server) dispatch() {
 				log.Tracef("Unknown connection, dropping response packet: %d", port)
 				continue
 			}
-			s.opts.OnInbound(pkt, ft, port)
+			s.opts.OnInbound(pkt, ft)
 			pkt.recalcTCPChecksum()
 			pkt.recalcIPChecksum()
 			s.acceptedPacket()
@@ -325,12 +333,8 @@ func (s *server) writeToDownstream() {
 // TCP hosts.
 func (s *server) writeToUpstreamTCP() {
 	for pkt := range s.toUpstreamTCP {
-		err := s.tcpTransport.Write(pkt)
+		s.tcpTransport.Write(pkt)
 		s.bufferPool.Put(pkt.Raw)
-		if err != nil {
-			log.Errorf("Unexpected error writing to upstream TCP: %v", err)
-			return
-		}
 	}
 }
 
