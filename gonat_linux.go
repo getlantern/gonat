@@ -9,8 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/getlantern/errors"
 	"github.com/getlantern/golog"
@@ -64,22 +62,13 @@ type server struct {
 	numTcpConns     int64
 	numUdpPorts     int64
 
-	downstream io.ReadWriter
-	opts       *Opts
-	ifAddr     string
-	bufferPool *bpool.BytePool
-	// udpTransport io.ReadWriteCloser
-	tcpTransport    *transport
-	fromDownstream  chan *IPPacket
-	toUpstreamTCP   chan *IPPacket
-	fromUpstreamTCP chan *IPPacket
-	toDownstream    chan *IPPacket
-	close           chan interface{}
-}
-
-type conn struct {
-	io.Closer
-	port uint16
+	downstream     io.ReadWriter
+	opts           *Opts
+	ifAddr         string
+	bufferPool     *bpool.BytePool
+	fromDownstream chan *IPPacket
+	toDownstream   chan *IPPacket
+	close          chan interface{}
 }
 
 type Opts struct {
@@ -169,21 +158,14 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 	}
 	log.Debugf("Outbound packets will use %v", ifAddr)
 
-	tcpTransport, err := createTransport(opts.IFName, syscall.IPPROTO_TCP)
-	if err != nil {
-		return nil, errors.New("Unable to create TCP transport: %v", err)
-	}
 	s := &server{
-		downstream:      downstream,
-		opts:            opts,
-		ifAddr:          ifAddr,
-		bufferPool:      bpool.NewBytePool(opts.BufferPoolSize/opts.MTU, opts.MTU),
-		tcpTransport:    tcpTransport,
-		fromDownstream:  make(chan *IPPacket, 2500),
-		toUpstreamTCP:   make(chan *IPPacket, 2500),
-		fromUpstreamTCP: make(chan *IPPacket, 2500),
-		toDownstream:    make(chan *IPPacket, 2500),
-		close:           make(chan interface{}),
+		downstream:     downstream,
+		opts:           opts,
+		ifAddr:         ifAddr,
+		bufferPool:     bpool.NewBytePool(opts.BufferPoolSize/opts.MTU, opts.MTU),
+		fromDownstream: make(chan *IPPacket, 2500),
+		toDownstream:   make(chan *IPPacket, 2500),
+		close:          make(chan interface{}),
 	}
 	return s, nil
 }
@@ -191,8 +173,6 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 func (s *server) Serve() error {
 	go s.trackStats()
 	go s.dispatch()
-	go s.writeToUpstreamTCP()
-	go s.readFromUpstreamTCP()
 	go s.writeToDownstream()
 	return s.readFromDownstream()
 }
@@ -207,7 +187,6 @@ func (s *server) dispatch() {
 		return
 	}
 	tcpConns := make(map[FourTuple]*conn)
-	tcpPorts := make(map[uint16]FourTuple)
 	for {
 		select {
 		case pkt := <-s.fromDownstream:
@@ -217,51 +196,32 @@ func (s *server) dispatch() {
 				ft := pkt.FT()
 				c := tcpConns[ft]
 				if c == nil {
-					// Bind a socket to get an ephemeral port
-					socket, port, err := s.bindTCPSocket()
+					var err error
+					c, err = s.newConn(pkt.IPProto, ft)
 					if err != nil {
 						log.Errorf("Unable to reserve tcp port, dropping packet: %v", err)
+						s.rejectedPacket()
+						s.bufferPool.Put(pkt.Raw)
 						continue
 					}
-					// TODO: actually close the socket when we're done with the ephemeral port
-					c = &conn{
-						Closer: socket,
-						port:   port,
-					}
 					tcpConns[ft] = c
-					tcpPorts[port] = ft
 					s.addTCPConn()
 					// Drop RST packets originating from our ephemeral port so that when the kernel automatically
 					// generates an RST in response to the unexpected SYN,ACK from upstream, we don't actually
 					// kill the connection.
 					// TODO: remove this rule when we're done with this ephemeral port and make sure that a final RST does get sent.
-					if err := ipt.Append("filter", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--source", s.ifAddr, "--source-port", strconv.Itoa(int(port)), "-j", "DROP"); err != nil {
+					if err := ipt.Append("filter", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--source", s.ifAddr, "--source-port", strconv.Itoa(int(c.port)), "-j", "DROP"); err != nil {
 						log.Errorf("Error updating iptables: %v", err)
 					}
 				}
-				pkt.SetSource(s.ifAddr, c.port)
-				pkt.recalcTCPChecksum()
-				pkt.recalcIPChecksum()
 				s.acceptedPacket()
-				s.toUpstreamTCP <- pkt
+				c.toUpstream <- pkt
 			default:
 				s.rejectedPacket()
+				s.bufferPool.Put(pkt.Raw)
 				log.Tracef("Unknown IP protocol, ignoring: %v", pkt.IPProto)
 				continue
 			}
-		case pkt := <-s.fromUpstreamTCP:
-			port := pkt.FT().Dst.Port
-			ft, found := tcpPorts[port]
-			if !found {
-				s.rejectedPacket()
-				log.Tracef("Unknown connection, dropping response packet: %d", port)
-				continue
-			}
-			s.opts.OnInbound(pkt, ft)
-			pkt.recalcTCPChecksum()
-			pkt.recalcIPChecksum()
-			s.acceptedPacket()
-			s.toDownstream <- pkt
 		case <-reapTicker.C:
 			// p.reapTCP()
 			// p.reapUDP()
@@ -293,30 +253,6 @@ func (s *server) readFromDownstream() error {
 	}
 }
 
-// readFromUpstreamTCP reads all packets coming from upstream TCP connections.
-// Because we're using raw sockets, this captures inbound packets from other
-// TCP connections on the machine. Those get ignored inside the `dispatch` loop
-// because their ports won't match one of our mapped ports.
-func (s *server) readFromUpstreamTCP() {
-	for {
-		b := s.bufferPool.Get()
-		n, err := s.tcpTransport.Read(b)
-		if err != nil {
-			log.Errorf("Unexpected error reading from upstream: %v", err)
-			return
-		}
-		log.Tracef("Read %d from upstream", n)
-		raw := b[:n]
-		pkt, err := parseIPPacket(raw)
-		if err != nil {
-			log.Debugf("Error on inbound packet, ignoring: %v", err)
-			// p.rejectedPacket()
-			continue
-		}
-		s.fromUpstreamTCP <- pkt
-	}
-}
-
 // writeToDownstream writes all IP packets that we're sending back dowstream.
 func (s *server) writeToDownstream() {
 	for pkt := range s.toDownstream {
@@ -329,80 +265,98 @@ func (s *server) writeToDownstream() {
 	}
 }
 
-// writeToUpstreamTCP writes all IP packets that we're sending to all upstream
-// TCP hosts.
-func (s *server) writeToUpstreamTCP() {
-	for pkt := range s.toUpstreamTCP {
-		s.tcpTransport.Write(pkt)
-		s.bufferPool.Put(pkt.Raw)
-	}
-}
-
 func (s *server) Close() error {
 	return nil
 }
 
-// createTransports creates a raw socket for either TCP or UDP type
-// (depending no the specified proto). This socket is used to send all IP
-// packets that we're handling upstream as well as to read all IP packets
-// from upstream. Because it's a raw socket, we also get packets for other
-// applications, which we just ignore later.
-func createTransport(ifName string, proto int) (*transport, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, proto)
+// newConn creates a connection built around a raw socket for either TCP or UDP
+// (depending no the specified proto). Being a raw socket, it allows us to send our
+// own IP packets.
+func (s *server) newConn(proto uint8, ft FourTuple) (*conn, error) {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, int(proto))
 	if err != nil {
 		return nil, errors.New("Unable to create transport: %v", err)
 	}
 	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_HDRINCL, 1); err != nil {
 		return nil, errors.New("Unable to set IP_HDRINCL: %v", err)
 	}
-	if err := syscall.BindToDevice(fd, ifName); err != nil {
-		return nil, errors.New("Unable to bind to interface: %v", err)
+	bindAddr := sockAddrFor(s.ifAddr, 0)
+	if err := syscall.Bind(fd, bindAddr); err != nil {
+		return nil, errors.New("Unable to bind raw socket: %v", err)
 	}
-	err = unix.SetNonblock(fd, true)
-	if err != nil {
-		return nil, errors.New("Unable to set non-blocking: %v", err)
+	connectAddr := sockAddrFor(ft.Dst.IP, ft.Dst.Port)
+	if err := syscall.Connect(fd, connectAddr); err != nil {
+		return nil, errors.New("Unable to connect raw socket: %v", err)
 	}
 	file := os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd))
-	tr := &transport{
-		ReadCloser: file,
-		fd:         fd,
-	}
-	return tr, nil
-}
-
-func (s *server) bindTCPSocket() (io.Closer, uint16, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
-	if err != nil {
-		return nil, 0, errors.New("Unable to create TCP socket: %v", err)
-	}
-	var addr [4]byte
-	copy(addr[:], net.ParseIP(s.ifAddr).To4())
-	bindAddr := &syscall.SockaddrInet4{
-		Addr: addr,
-		Port: 0, // let OS pick a port for us
-	}
-	if err := syscall.Bind(fd, bindAddr); err != nil {
-		return nil, 0, errors.New("Unable to bind TCP socket: %v", err)
-	}
-	// if err := syscall.Listen(fd, 1000); err != nil {
-	// 	return nil, 0, errors.New("Unable to listen on bound TCP socket: %v", err)
-	// }
 	sa, err := syscall.Getsockname(fd)
 	if err != nil {
-		return nil, 0, errors.New("Unable to get bound TCP socket address: %v", err)
+		return nil, errors.New("Unable to get bound TCP socket address: %v", err)
 	}
-	file := os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd))
-	return file, uint16(sa.(*syscall.SockaddrInet4).Port), nil
+	c := &conn{
+		ReadWriteCloser: file,
+		port:            uint16(sa.(*syscall.SockaddrInet4).Port),
+		ft:              ft,
+		toUpstream:      make(chan *IPPacket, s.opts.BufferDepth),
+		s:               s,
+	}
+	go c.readFromUpstream()
+	go c.writeToUpstream()
+	return c, nil
 }
 
-type transport struct {
-	io.ReadCloser
-	fd int
-}
-
-func (tr *transport) Write(pkt *IPPacket) error {
+func sockAddrFor(ip string, port uint16) syscall.Sockaddr {
 	var addr [4]byte
-	copy(addr[:], pkt.DstAddr.IP.To4())
-	sockAddr := &unix.SockaddrInet4{Port: int(pkt.FT().Dst.Port), Addr: addr}
-	return unix.Sendto(tr.fd, pkt.Raw, 0, sockAddr)
+	copy(addr[:], net.ParseIP(ip).To4())
+	return &syscall.SockaddrInet4{
+		Addr: addr,
+		Port: int(port),
+	}
+}
+
+type conn struct {
+	io.ReadWriteCloser
+	ft         FourTuple
+	port       uint16
+	toUpstream chan *IPPacket
+	s          *server
+}
+
+func (c *conn) writeToUpstream() {
+	for pkt := range c.toUpstream {
+		pkt.SetSource(c.s.ifAddr, c.port)
+		pkt.recalcTCPChecksum()
+		pkt.recalcIPChecksum()
+		_, err := c.Write(pkt.Raw)
+		if err != nil {
+			log.Errorf("Error writing upstream: %v", err)
+			return
+		}
+	}
+}
+
+func (c *conn) readFromUpstream() {
+	for {
+		b := c.s.bufferPool.Get()
+		n, err := c.Read(b)
+		if err != nil {
+			c.s.rejectedPacket()
+			c.s.bufferPool.Put(b)
+			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				continue
+			}
+			return
+		}
+		if pkt, err := parseIPPacket(b[:n]); err != nil {
+			c.s.rejectedPacket()
+			c.s.bufferPool.Put(b)
+		} else {
+			pkt.SetDest(c.ft.Src.IP, c.ft.Src.Port)
+			c.s.opts.OnInbound(pkt, c.ft)
+			pkt.recalcTCPChecksum()
+			pkt.recalcIPChecksum()
+			c.s.acceptedPacket()
+			c.s.toDownstream <- pkt
+		}
+	}
 }
