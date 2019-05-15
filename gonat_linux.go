@@ -5,15 +5,15 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 
-	ct "github.com/florianl/go-conntrack"
 	"github.com/getlantern/errors"
 	"github.com/getlantern/golog"
-	"github.com/mdlayher/netlink/nlenc"
 	"github.com/oxtoacart/bpool"
 )
 
@@ -201,56 +201,26 @@ func (s *server) Serve() error {
 	return s.readFromDownstream()
 }
 
-func ctAttr(t ct.ConnAttrType, d []byte) ct.ConnAttr {
-	return ct.ConnAttr{Type: t, Data: d}
-}
-
 func (s *server) dispatch() {
 	reapTicker := time.NewTicker(1 * time.Second)
 	defer reapTicker.Stop()
 
-	ctrack, err := ct.Open(&ct.Config{})
-	if err != nil {
-		log.Errorf("Unable to create conntrack connection: %v", err)
-		return
-	}
-	defer ctrack.Close()
-
-	// // Get all IPv4 sessions
-	// sessions, err := ctrack.Dump(ct.Ct, ct.CtIPv4)
-	// if err != nil {
-	// 	fmt.Println("Could not dump sessions:", err)
-	// 	return
-	// }
-
-	// for _, x := range sessions {
-	// 	val, err := x.Uint32(ct.AttrStatus)
-	// 	log.Debugf("%v: %v", val, err)
-	// }
-
-	// log.Fatal("Done")
-
 	createConntrackEntry := func(pkt *IPPacket, ft FourTuple, port uint16) error {
-		// See useful example here - https://github.com/threatstack/libnetfilter_conntrack/blob/master/utils/conntrack_create.c
-		return ctrack.Create(
-			ct.Ct,
-			ct.CtIPv4,
-			[]ct.ConnAttr{
-				ctAttr(ct.AttrOrigIPv4Src, net.ParseIP(s.ifAddr).To4()),
-				ctAttr(ct.AttrOrigIPv4Dst, pkt.DstAddr.IP.To4()),
-				ctAttr(ct.AttrReplIPv4Src, pkt.DstAddr.IP.To4()),
-				ctAttr(ct.AttrReplIPv4Dst, net.ParseIP(s.ifAddr).To4()),
-				ctAttr(ct.AttrOrigL4Proto, nlenc.Uint8Bytes(pkt.IPProto)),
-				ctAttr(ct.AttrReplL4Proto, nlenc.Uint8Bytes(pkt.IPProto)),
-				ctAttr(ct.AttrOrigPortSrc, nlenc.Uint16Bytes(port)),
-				ctAttr(ct.AttrOrigPortDst, nlenc.Uint16Bytes(ft.Dst.Port)),
-				ctAttr(ct.AttrReplPortSrc, nlenc.Uint16Bytes(ft.Dst.Port)),
-				ctAttr(ct.AttrReplPortDst, nlenc.Uint16Bytes(port)),
-				ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(tcpConnTrackEstablished)),
-				ctAttr(ct.AttrStatus, nlenc.Uint32Bytes(2382430208)),
-				ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(s.opts.IdleTimeout.Seconds()))),
-			},
-		)
+		srcIP := s.ifAddr
+		dstIP := ft.Dst.IP
+		srcPort := strconv.Itoa(int(port))
+		dstPort := strconv.Itoa(int(ft.Dst.Port))
+		srcIP, dstIP = dstIP, srcIP
+		// srcPort, dstPort = dstPort, srcPort
+		cmd := exec.Command("conntrack", "-I", "-p", "TCP",
+			"-s", srcIP, "-d", dstIP,
+			"-r", dstIP, "-q", srcIP,
+			"--sport", srcPort, "--dport", dstPort,
+			"--reply-port-src", dstPort, "--reply-port-dst", srcPort,
+			"--state", "ESTABLISHED",
+			"-u", "ASSURED",
+			"--timeout", strconv.Itoa(int(s.opts.IdleTimeout.Seconds())))
+		return cmd.Run()
 	}
 
 	tcpConns := make(map[FourTuple]*conn)
@@ -270,6 +240,7 @@ func (s *server) dispatch() {
 						log.Errorf("Unable to reserve tcp port, dropping packet: %v", err)
 						continue
 					}
+					socket.Close()
 					// TODO: actually close the socket when we're done with the ephemeral port
 					c = &conn{
 						Closer: socket,
@@ -403,10 +374,10 @@ func createTransport(ifName string, proto int) (*transport, error) {
 	if err := syscall.BindToDevice(fd, ifName); err != nil {
 		return nil, errors.New("Unable to bind to interface: %v", err)
 	}
-	err = unix.SetNonblock(fd, true)
-	if err != nil {
-		return nil, errors.New("Unable to set non-blocking: %v", err)
-	}
+	// err = unix.SetNonblock(fd, true)
+	// if err != nil {
+	// 	return nil, errors.New("Unable to set non-blocking: %v", err)
+	// }
 	file := os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd))
 	tr := &transport{
 		ReadCloser: file,
