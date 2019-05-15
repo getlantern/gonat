@@ -5,11 +5,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/coreos/go-iptables/iptables"
 	"github.com/getlantern/errors"
 	"github.com/getlantern/golog"
 	"github.com/oxtoacart/bpool"
@@ -32,6 +32,11 @@ const (
 	DefaultStatsInterval = 15 * time.Second
 )
 
+const (
+	minEphemeralPort = 32768
+	maxEphemeralPort = 61000 // consistent with most Linux kernels
+)
+
 var (
 	log = golog.LoggerFor("gonat")
 )
@@ -49,8 +54,8 @@ type Server interface {
 	// Number of TCP connections being tracked
 	NumTCPConns() int
 
-	// Number of UDP ports being tracked
-	NumUDPPorts() int
+	// Number of UDP connections being tracked
+	NumUDPConns() int
 
 	// Close stops the server and cleans up resources
 	Close() error
@@ -59,8 +64,8 @@ type Server interface {
 type server struct {
 	acceptedPackets int64
 	rejectedPackets int64
-	numTcpConns     int64
-	numUdpPorts     int64
+	numTCPConns     int64
+	numUDPConns     int64
 
 	downstream     io.ReadWriter
 	opts           *Opts
@@ -181,38 +186,95 @@ func (s *server) dispatch() {
 	reapTicker := time.NewTicker(1 * time.Second)
 	defer reapTicker.Stop()
 
-	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
-	if err != nil {
-		log.Errorf("Unable to prepare iptables: %v", err)
+	ports := map[uint8]map[Addr]uint16{
+		syscall.IPPROTO_TCP: make(map[Addr]uint16),
+		syscall.IPPROTO_UDP: make(map[Addr]uint16),
+	}
+	conns := map[uint8]map[FourTuple]*conn{
+		syscall.IPPROTO_TCP: make(map[FourTuple]*conn),
+		syscall.IPPROTO_UDP: make(map[FourTuple]*conn),
+	}
+
+	// Since we're using unconnected raw sockets, the kernel doesn't create ip_conntrack
+	// entries for us. When we receive a SYN,ACK packet from the upstream end in response
+	// to the SYN packet that we forward from the client, the kernel automatically sends
+	// an RST packet because it doesn't see a connection in the right state. We can't
+	// actually fake a connection in the right state, however we can manually create an "ESTABLISHED"
+	// connection in ip_conntrack which allows us to use a single iptables rule to safely drop
+	// all outbound RST packets for such connections. The rule can be added like so:
+	//
+	//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
+	//
+	createConntrackEntry := func(pkt *IPPacket, ft FourTuple, port uint16) error {
+		srcIP := s.ifAddr
+		dstIP := ft.Dst.IP
+		srcPort := strconv.Itoa(int(port))
+		dstPort := strconv.Itoa(int(ft.Dst.Port))
+		srcIP, dstIP = dstIP, srcIP
+		// srcPort, dstPort = dstPort, srcPort
+		args := []string{
+			"-I", "-p", "TCP",
+			"-s", srcIP, "-d", dstIP,
+			"-r", dstIP, "-q", srcIP,
+			"--sport", srcPort, "--dport", dstPort,
+			"--reply-port-src", dstPort, "--reply-port-dst", srcPort,
+			"--state", "ESTABLISHED",
+			"-u", "ASSURED",
+			"--timeout", strconv.Itoa(int(s.opts.IdleTimeout.Seconds())),
+		}
+		cmd := exec.Command("conntrack", args...)
+		return cmd.Run()
+	}
+
+	// assignPort assigns an ephemeral local port for a new connection. If an existing connection
+	// with the resulting 4-tuple is already tracked because a different application created it,
+	// this will fail on createConntrackEntry and then retry until it finds an untracked ephemeral
+	// port or runs out of ports to try.
+	assignPort := func(pkt *IPPacket, ft FourTuple) (port uint16, err error) {
+		portsByOrigin := ports[pkt.IPProto]
+		for i := 0; i < maxEphemeralPort-minEphemeralPort; i++ {
+			port = portsByOrigin[ft.Dst] + 1
+			if port < minEphemeralPort || port > maxEphemeralPort {
+				port = minEphemeralPort
+			}
+			portsByOrigin[ft.Dst] = port
+			err = createConntrackEntry(pkt, ft, port)
+			if err != nil {
+				// this can happen if this fourtuple is already tracked, ignore and retry
+				continue
+			}
+			return
+		}
+		err = errors.New("Gave up looking for ephemeral port, final error from conntrack: %v", err)
 		return
 	}
-	tcpConns := make(map[FourTuple]*conn)
+
 	for {
 		select {
 		case pkt := <-s.fromDownstream:
 			switch pkt.IPProto {
-			case syscall.IPPROTO_TCP:
+			case syscall.IPPROTO_TCP, syscall.IPPROTO_UDP:
 				s.opts.OnOutbound(pkt)
 				ft := pkt.FT()
-				c := tcpConns[ft]
+				connsByFT := conns[pkt.IPProto]
+				c := connsByFT[ft]
 				if c == nil {
-					var err error
-					c, err = s.newConn(pkt.IPProto, ft)
+					port, err := assignPort(pkt, ft)
 					if err != nil {
-						log.Errorf("Unable to reserve tcp port, dropping packet: %v", err)
+						log.Errorf("Unable to assign port, dropping packet: %v", err)
 						s.rejectedPacket()
 						s.bufferPool.Put(pkt.Raw)
 						continue
 					}
-					tcpConns[ft] = c
-					s.addTCPConn()
-					// Drop RST packets originating from our ephemeral port so that when the kernel automatically
-					// generates an RST in response to the unexpected SYN,ACK from upstream, we don't actually
-					// kill the connection.
-					// TODO: remove this rule when we're done with this ephemeral port and make sure that a final RST does get sent.
-					if err := ipt.Append("filter", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--source", s.ifAddr, "--source-port", strconv.Itoa(int(c.port)), "-j", "DROP"); err != nil {
-						log.Errorf("Error updating iptables: %v", err)
+					c, err = s.newConn(pkt.IPProto, ft, port)
+					if err != nil {
+						log.Errorf("Unable to create connection, dropping packet: %v", err)
+						s.rejectedPacket()
+						s.bufferPool.Put(pkt.Raw)
+						continue
 					}
+					connsByFT[ft] = c
+					s.addConn(pkt.IPProto)
 				}
 				s.acceptedPacket()
 				c.toUpstream <- pkt
@@ -231,48 +293,10 @@ func (s *server) dispatch() {
 	}
 }
 
-// readFromDownstream reads all IP packets from downstream clients.
-func (s *server) readFromDownstream() error {
-	for {
-		b := s.bufferPool.Get()
-		n, err := s.downstream.Read(b)
-		if err != nil {
-			if err == io.EOF {
-				return err
-			}
-			return errors.New("Unexpected error reading from downstream: %v", err)
-		}
-		raw := b[:n]
-		pkt, err := parseIPPacket(raw)
-		if err != nil {
-			log.Tracef("Error on inbound packet, ignoring: %v", err)
-			s.rejectedPacket()
-			continue
-		}
-		s.fromDownstream <- pkt
-	}
-}
-
-// writeToDownstream writes all IP packets that we're sending back dowstream.
-func (s *server) writeToDownstream() {
-	for pkt := range s.toDownstream {
-		_, err := s.downstream.Write(pkt.Raw)
-		s.bufferPool.Put(pkt.Raw)
-		if err != nil {
-			log.Errorf("Unexpected error writing to downstream: %v", err)
-			return
-		}
-	}
-}
-
-func (s *server) Close() error {
-	return nil
-}
-
 // newConn creates a connection built around a raw socket for either TCP or UDP
 // (depending no the specified proto). Being a raw socket, it allows us to send our
 // own IP packets.
-func (s *server) newConn(proto uint8, ft FourTuple) (*conn, error) {
+func (s *server) newConn(proto uint8, ft FourTuple, port uint16) (*conn, error) {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, int(proto))
 	if err != nil {
 		return nil, errors.New("Unable to create transport: %v", err)
@@ -280,7 +304,7 @@ func (s *server) newConn(proto uint8, ft FourTuple) (*conn, error) {
 	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_HDRINCL, 1); err != nil {
 		return nil, errors.New("Unable to set IP_HDRINCL: %v", err)
 	}
-	bindAddr := sockAddrFor(s.ifAddr, 0)
+	bindAddr := sockAddrFor(s.ifAddr, port)
 	if err := syscall.Bind(fd, bindAddr); err != nil {
 		return nil, errors.New("Unable to bind raw socket: %v", err)
 	}
@@ -289,13 +313,9 @@ func (s *server) newConn(proto uint8, ft FourTuple) (*conn, error) {
 		return nil, errors.New("Unable to connect raw socket: %v", err)
 	}
 	file := os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd))
-	sa, err := syscall.Getsockname(fd)
-	if err != nil {
-		return nil, errors.New("Unable to get bound TCP socket address: %v", err)
-	}
 	c := &conn{
 		ReadWriteCloser: file,
-		port:            uint16(sa.(*syscall.SockaddrInet4).Port),
+		port:            port,
 		ft:              ft,
 		toUpstream:      make(chan *IPPacket, s.opts.BufferDepth),
 		s:               s,
@@ -359,4 +379,42 @@ func (c *conn) readFromUpstream() {
 			c.s.toDownstream <- pkt
 		}
 	}
+}
+
+// readFromDownstream reads all IP packets from downstream clients.
+func (s *server) readFromDownstream() error {
+	for {
+		b := s.bufferPool.Get()
+		n, err := s.downstream.Read(b)
+		if err != nil {
+			if err == io.EOF {
+				return err
+			}
+			return errors.New("Unexpected error reading from downstream: %v", err)
+		}
+		raw := b[:n]
+		pkt, err := parseIPPacket(raw)
+		if err != nil {
+			log.Tracef("Error on inbound packet, ignoring: %v", err)
+			s.rejectedPacket()
+			continue
+		}
+		s.fromDownstream <- pkt
+	}
+}
+
+// writeToDownstream writes all IP packets that we're sending back dowstream.
+func (s *server) writeToDownstream() {
+	for pkt := range s.toDownstream {
+		_, err := s.downstream.Write(pkt.Raw)
+		s.bufferPool.Put(pkt.Raw)
+		if err != nil {
+			log.Errorf("Unexpected error writing to downstream: %v", err)
+			return
+		}
+	}
+}
+
+func (s *server) Close() error {
+	return nil
 }

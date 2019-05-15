@@ -2,6 +2,7 @@ package gonat
 
 import (
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -14,7 +15,7 @@ func (s *server) trackStats() {
 		// case <-s.closeCh:
 		// 	return
 		case <-ticker.C:
-			log.Debugf("TCP Conns: %v    UDP Ports: %v", s.NumTCPConns(), s.NumUDPPorts())
+			log.Debugf("TCP Conns: %v    UDP Conns: %v", s.NumTCPConns(), s.NumUDPConns())
 			log.Debugf("Accepted Packets: %d    Rejected Packets: %d", s.AcceptedPackets(), s.RejectedPackets())
 		}
 	}
@@ -36,26 +37,28 @@ func (s *server) RejectedPackets() int {
 	return int(atomic.LoadInt64(&s.rejectedPackets))
 }
 
-func (s *server) addTCPConn() {
-	atomic.AddInt64(&s.numTcpConns, 1)
+func (s *server) addConn(proto uint8) {
+	switch proto {
+	case syscall.IPPROTO_TCP:
+		atomic.AddInt64(&s.numTCPConns, 1)
+	case syscall.IPPROTO_UDP:
+		atomic.AddInt64(&s.numUDPConns, 1)
+	}
 }
 
-func (s *server) removeTCPConn() {
-	atomic.AddInt64(&s.numTcpConns, -1)
+func (s *server) removeConn(proto uint8) {
+	switch proto {
+	case syscall.IPPROTO_TCP:
+		atomic.AddInt64(&s.numTCPConns, -1)
+	case syscall.IPPROTO_UDP:
+		atomic.AddInt64(&s.numUDPConns, -1)
+	}
 }
 
 func (s *server) NumTCPConns() int {
-	return int(atomic.LoadInt64(&s.numTcpConns))
+	return int(atomic.LoadInt64(&s.numTCPConns))
 }
 
-func (s *server) addUDPPort() {
-	atomic.AddInt64(&s.numUdpPorts, 1)
-}
-
-func (s *server) removeUDPPort() {
-	atomic.AddInt64(&s.numUdpPorts, -1)
-}
-
-func (s *server) NumUDPPorts() int {
-	return int(atomic.LoadInt64(&s.numUdpPorts))
+func (s *server) NumUDPConns() int {
+	return int(atomic.LoadInt64(&s.numUDPConns))
 }
