@@ -78,7 +78,9 @@ type server struct {
 }
 
 type Opts struct {
-	// IFName is the name of the interface to use for connecting upstream
+	// IFName is the name of the interface to use for connecting upstream.
+	// If not specified, this will use the default interface for reaching the
+	// Internet.
 	IFName string
 
 	// MTU in bytes. Default of 1500 is usually fine.
@@ -109,7 +111,7 @@ type Opts struct {
 
 // ApplyDefaults applies the default values to the given Opts, including making
 // a new Opts if opts is nil.
-func (opts *Opts) ApplyDefaults() *Opts {
+func (opts *Opts) ApplyDefaults() error {
 	if opts == nil {
 		opts = &Opts{}
 	}
@@ -134,11 +136,49 @@ func (opts *Opts) ApplyDefaults() *Opts {
 	if opts.OnInbound == nil {
 		opts.OnInbound = func(pkt *IPPacket, ft FourTuple) {}
 	}
-	return opts
+	if opts.IFName == "" {
+		err := opts.findDefaultInterface()
+		if err != nil {
+			return errors.New("Unable to determine default interface: %v", err)
+		}
+	}
+	return nil
+}
+
+func (opts *Opts) findDefaultInterface() error {
+	// try to find default interface by dialing an external connection
+	conn, err := net.Dial("udp4", "lantern.io:80")
+	if err != nil {
+		return errors.New("Unable to dial lantern.io: %v", err)
+	}
+	ip := conn.LocalAddr().(*net.UDPAddr).IP.String()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return errors.New("Unable to list interface: %v", err)
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return errors.New("Unable to list addresses of interface %v: %v", iface.Name, err)
+		}
+		for _, addr := range addrs {
+			switch t := addr.(type) {
+			case *net.IPNet:
+				if t.IP.String() == ip {
+					opts.IFName = iface.Name
+					return nil
+				}
+			}
+		}
+	}
+	return errors.New("No matching interface found for address %v", ip)
 }
 
 func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
-	opts.ApplyDefaults()
+	err := opts.ApplyDefaults()
+	if err != nil {
+		return nil, errors.New("Error applying default options: %v", err)
+	}
 
 	outIF, err := net.InterfaceByName(opts.IFName)
 	if err != nil {
