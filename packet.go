@@ -103,6 +103,10 @@ func (pkt *IPPacket) tcpChecksum() uint16 {
 	return networkByteOrder.Uint16(pkt.Payload[16:])
 }
 
+func (pkt *IPPacket) udpChecksum() uint16 {
+	return networkByteOrder.Uint16(pkt.Payload[6:])
+}
+
 func (pkt *IPPacket) recalcChecksum() {
 	switch pkt.IPProto {
 	case syscall.IPPROTO_TCP:
@@ -118,7 +122,7 @@ func (pkt *IPPacket) recalcTCPChecksum() {
 }
 
 func (pkt *IPPacket) recalcUDPChecksum() {
-	pkt.recalcTransportChecksum(7)
+	pkt.recalcTransportChecksum(6)
 }
 
 func (pkt *IPPacket) recalcTransportChecksum(csumIdx int) {

@@ -221,7 +221,7 @@ func (s *server) dispatch() {
 			proto = "UDP"
 		}
 		args := []string{
-			"-I", "-u", "SEEN_REPLY",
+			"-I", "-u", "ASSURED",
 			"--timeout", strconv.Itoa(int(s.opts.IdleTimeout.Seconds())),
 			"-p", proto,
 			"-s", srcIP, "-d", dstIP,
