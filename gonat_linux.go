@@ -5,15 +5,15 @@ import (
 	"io"
 	"net"
 	"os"
-	"strconv"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 
-	"github.com/coreos/go-iptables/iptables"
+	ct "github.com/florianl/go-conntrack"
 	"github.com/getlantern/errors"
 	"github.com/getlantern/golog"
+	"github.com/mdlayher/netlink/nlenc"
 	"github.com/oxtoacart/bpool"
 )
 
@@ -32,6 +32,10 @@ const (
 
 	// DefaultStatsInterval is 15 seconds
 	DefaultStatsInterval = 15 * time.Second
+)
+
+const (
+	tcpConnTrackEstablished = 3
 )
 
 var (
@@ -197,15 +201,58 @@ func (s *server) Serve() error {
 	return s.readFromDownstream()
 }
 
+func ctAttr(t ct.ConnAttrType, d []byte) ct.ConnAttr {
+	return ct.ConnAttr{Type: t, Data: d}
+}
+
 func (s *server) dispatch() {
 	reapTicker := time.NewTicker(1 * time.Second)
 	defer reapTicker.Stop()
 
-	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	ctrack, err := ct.Open(&ct.Config{})
 	if err != nil {
-		log.Errorf("Unable to prepare iptables: %v", err)
+		log.Errorf("Unable to create conntrack connection: %v", err)
 		return
 	}
+	defer ctrack.Close()
+
+	// // Get all IPv4 sessions
+	// sessions, err := ctrack.Dump(ct.Ct, ct.CtIPv4)
+	// if err != nil {
+	// 	fmt.Println("Could not dump sessions:", err)
+	// 	return
+	// }
+
+	// for _, x := range sessions {
+	// 	val, err := x.Uint32(ct.AttrStatus)
+	// 	log.Debugf("%v: %v", val, err)
+	// }
+
+	// log.Fatal("Done")
+
+	createConntrackEntry := func(pkt *IPPacket, ft FourTuple, port uint16) error {
+		// See useful example here - https://github.com/threatstack/libnetfilter_conntrack/blob/master/utils/conntrack_create.c
+		return ctrack.Create(
+			ct.Ct,
+			ct.CtIPv4,
+			[]ct.ConnAttr{
+				ctAttr(ct.AttrOrigIPv4Src, net.ParseIP(s.ifAddr).To4()),
+				ctAttr(ct.AttrOrigIPv4Dst, pkt.DstAddr.IP.To4()),
+				ctAttr(ct.AttrReplIPv4Src, pkt.DstAddr.IP.To4()),
+				ctAttr(ct.AttrReplIPv4Dst, net.ParseIP(s.ifAddr).To4()),
+				ctAttr(ct.AttrOrigL4Proto, nlenc.Uint8Bytes(pkt.IPProto)),
+				ctAttr(ct.AttrReplL4Proto, nlenc.Uint8Bytes(pkt.IPProto)),
+				ctAttr(ct.AttrOrigPortSrc, nlenc.Uint16Bytes(port)),
+				ctAttr(ct.AttrOrigPortDst, nlenc.Uint16Bytes(ft.Dst.Port)),
+				ctAttr(ct.AttrReplPortSrc, nlenc.Uint16Bytes(ft.Dst.Port)),
+				ctAttr(ct.AttrReplPortDst, nlenc.Uint16Bytes(port)),
+				ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(tcpConnTrackEstablished)),
+				ctAttr(ct.AttrStatus, nlenc.Uint32Bytes(2382430208)),
+				ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(s.opts.IdleTimeout.Seconds()))),
+			},
+		)
+	}
+
 	tcpConns := make(map[FourTuple]*conn)
 	tcpPorts := make(map[uint16]FourTuple)
 	for {
@@ -231,12 +278,10 @@ func (s *server) dispatch() {
 					tcpConns[ft] = c
 					tcpPorts[port] = ft
 					s.addTCPConn()
-					// Drop RST packets originating from our ephemeral port so that when the kernel automatically
-					// generates an RST in response to the unexpected SYN,ACK from upstream, we don't actually
-					// kill the connection.
-					// TODO: remove this rule when we're done with this ephemeral port and make sure that a final RST does get sent.
-					if err := ipt.Append("filter", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--source", s.ifAddr, "--source-port", strconv.Itoa(int(port)), "-j", "DROP"); err != nil {
-						log.Errorf("Error updating iptables: %v", err)
+					if err := createConntrackEntry(pkt, ft, port); err != nil {
+						log.Errorf("Error adding flow to conntrack table: %v", err)
+						s.rejectedPacket()
+						continue
 					}
 				}
 				pkt.SetSource(s.ifAddr, c.port)
