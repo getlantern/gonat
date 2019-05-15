@@ -212,18 +212,34 @@ func (s *server) dispatch() {
 		dstPort := strconv.Itoa(int(ft.Dst.Port))
 		srcIP, dstIP = dstIP, srcIP
 		// srcPort, dstPort = dstPort, srcPort
+
+		proto := ""
+		switch pkt.IPProto {
+		case syscall.IPPROTO_TCP:
+			proto = "TCP"
+		case syscall.IPPROTO_UDP:
+			proto = "UDP"
+		}
 		args := []string{
-			"-I", "-p", "TCP",
+			"-I", "-u", "SEEN_REPLY",
+			"--timeout", strconv.Itoa(int(s.opts.IdleTimeout.Seconds())),
+			"-p", proto,
 			"-s", srcIP, "-d", dstIP,
 			"-r", dstIP, "-q", srcIP,
 			"--sport", srcPort, "--dport", dstPort,
 			"--reply-port-src", dstPort, "--reply-port-dst", srcPort,
-			"--state", "ESTABLISHED",
-			"-u", "ASSURED",
-			"--timeout", strconv.Itoa(int(s.opts.IdleTimeout.Seconds())),
 		}
+
+		if pkt.IPProto == syscall.IPPROTO_TCP {
+			args = append(args, "--state", "ESTABLISHED")
+		}
+
 		cmd := exec.Command("conntrack", args...)
-		return cmd.Run()
+		err := cmd.Run()
+		if err != nil {
+			err = errors.New("Unable to add conntrack entry with args %v: %v", args, err)
+		}
+		return err
 	}
 
 	// assignPort assigns an ephemeral local port for a new connection. If an existing connection
@@ -345,8 +361,7 @@ type conn struct {
 func (c *conn) writeToUpstream() {
 	for pkt := range c.toUpstream {
 		pkt.SetSource(c.s.ifAddr, c.port)
-		pkt.recalcTCPChecksum()
-		pkt.recalcIPChecksum()
+		pkt.recalcChecksum()
 		_, err := c.Write(pkt.Raw)
 		if err != nil {
 			log.Errorf("Error writing upstream: %v", err)
@@ -373,8 +388,7 @@ func (c *conn) readFromUpstream() {
 		} else {
 			pkt.SetDest(c.ft.Src.IP, c.ft.Src.Port)
 			c.s.opts.OnInbound(pkt, c.ft)
-			pkt.recalcTCPChecksum()
-			pkt.recalcIPChecksum()
+			pkt.recalcChecksum()
 			c.s.acceptedPacket()
 			c.s.toDownstream <- pkt
 		}

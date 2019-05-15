@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"syscall"
 
 	"github.com/getlantern/errors"
 )
@@ -102,10 +103,28 @@ func (pkt *IPPacket) tcpChecksum() uint16 {
 	return networkByteOrder.Uint16(pkt.Payload[16:])
 }
 
+func (pkt *IPPacket) recalcChecksum() {
+	switch pkt.IPProto {
+	case syscall.IPPROTO_TCP:
+		pkt.recalcTCPChecksum()
+	case syscall.IPPROTO_UDP:
+		pkt.recalcUDPChecksum()
+	}
+	pkt.recalcIPChecksum()
+}
+
 func (pkt *IPPacket) recalcTCPChecksum() {
+	pkt.recalcTransportChecksum(16)
+}
+
+func (pkt *IPPacket) recalcUDPChecksum() {
+	pkt.recalcTransportChecksum(7)
+}
+
+func (pkt *IPPacket) recalcTransportChecksum(csumIdx int) {
 	// Clear checksum bytes
-	pkt.Payload[16] = 0
-	pkt.Payload[17] = 0
+	pkt.Payload[csumIdx] = 0
+	pkt.Payload[csumIdx+1] = 0
 
 	csum := pkt.calcIPPseudoHeaderChecksum()
 
@@ -125,7 +144,7 @@ func (pkt *IPPacket) recalcTCPChecksum() {
 	for csum > 0xffff {
 		csum = (csum >> 16) + (csum & 0xffff)
 	}
-	networkByteOrder.PutUint16(pkt.Payload[16:], ^uint16(csum))
+	networkByteOrder.PutUint16(pkt.Payload[csumIdx:], ^uint16(csum))
 }
 
 func (pkt *IPPacket) calcIPPseudoHeaderChecksum() (csum uint32) {

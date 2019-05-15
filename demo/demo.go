@@ -76,7 +76,7 @@ func main() {
 	s, err := gonat.NewServer(dev, &gonat.Opts{
 		IFName: *ifOut,
 		OnOutbound: func(pkt *gonat.IPPacket) {
-			pkt.SetDest("80.249.99.148", 80)
+			pkt.SetDest("67.205.172.79", pkt.FT().Dst.Port)
 		},
 		OnInbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple) {
 			pkt.SetDest(ft.Src.IP, ft.Src.Port)
