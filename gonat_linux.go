@@ -3,6 +3,7 @@ package gonat
 import (
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -186,10 +187,6 @@ func (s *server) dispatch() {
 	reapTicker := time.NewTicker(1 * time.Second)
 	defer reapTicker.Stop()
 
-	ports := map[uint8]map[Addr]uint16{
-		syscall.IPPROTO_TCP: make(map[Addr]uint16),
-		syscall.IPPROTO_UDP: make(map[Addr]uint16),
-	}
 	conns := map[uint8]map[FourTuple]*conn{
 		syscall.IPPROTO_TCP: make(map[FourTuple]*conn),
 		syscall.IPPROTO_UDP: make(map[FourTuple]*conn),
@@ -242,18 +239,36 @@ func (s *server) dispatch() {
 		return err
 	}
 
+	// We create a random order for assigning new ports to minimize the chance of colliding
+	// with other running gonat instances.
+	numEphemeralPorts := maxEphemeralPort - minEphemeralPort
+	randomPortSequence := make([]uint16, numEphemeralPorts)
+	for i := uint16(0); i < uint16(numEphemeralPorts); i++ {
+		randomPortSequence[i] = minEphemeralPort + i
+	}
+	rand.Shuffle(numEphemeralPorts, func(i int, j int) {
+		randomPortSequence[i], randomPortSequence[j] = randomPortSequence[j], randomPortSequence[i]
+	})
+
+	portIndexes := map[uint8]map[Addr]int{
+		syscall.IPPROTO_TCP: make(map[Addr]int),
+		syscall.IPPROTO_UDP: make(map[Addr]int),
+	}
+
 	// assignPort assigns an ephemeral local port for a new connection. If an existing connection
 	// with the resulting 4-tuple is already tracked because a different application created it,
 	// this will fail on createConntrackEntry and then retry until it finds an untracked ephemeral
 	// port or runs out of ports to try.
 	assignPort := func(pkt *IPPacket, ft FourTuple) (port uint16, err error) {
-		portsByOrigin := ports[pkt.IPProto]
-		for i := 0; i < maxEphemeralPort-minEphemeralPort; i++ {
-			port = portsByOrigin[ft.Dst] + 1
-			if port < minEphemeralPort || port > maxEphemeralPort {
-				port = minEphemeralPort
+		portIndexesByOrigin := portIndexes[pkt.IPProto]
+		for i := 0; i < numEphemeralPorts; i++ {
+			portIndex := portIndexesByOrigin[ft.Dst] + 1
+			if portIndex >= numEphemeralPorts {
+				// loop back around to beginning of random sequence
+				portIndex = 0
 			}
-			portsByOrigin[ft.Dst] = port
+			portIndexesByOrigin[ft.Dst] = portIndex
+			port = randomPortSequence[portIndex]
 			err = createConntrackEntry(pkt, ft, port)
 			if err != nil {
 				// this can happen if this fourtuple is already tracked, ignore and retry
