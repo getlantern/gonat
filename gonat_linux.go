@@ -11,56 +11,8 @@ import (
 
 	ct "github.com/florianl/go-conntrack"
 	"github.com/getlantern/errors"
-	"github.com/getlantern/golog"
 	"github.com/mdlayher/netlink/nlenc"
-	"github.com/oxtoacart/bpool"
 )
-
-const (
-	// DefaultMTU is 65536 to accomodate large segments
-	DefaultMTU = 65536
-
-	// DefaultBufferPoolSize is 10 MB
-	DefaultBufferPoolSize = 10000000
-
-	// DefaultBufferDepth is 250 packets
-	DefaultBufferDepth = 250
-
-	// DefaultIdleTimeout is 65 seconds
-	DefaultIdleTimeout = 65 * time.Second
-
-	// DefaultStatsInterval is 15 seconds
-	DefaultStatsInterval = 15 * time.Second
-)
-
-const (
-	minEphemeralPort = 32768
-	maxEphemeralPort = 61000 // consistent with most Linux kernels
-)
-
-var (
-	log = golog.LoggerFor("gonat")
-)
-
-type Server interface {
-	// Serve starts processing packets and blocks until finished
-	Serve() error
-
-	// Count of accepted packets
-	AcceptedPackets() int
-
-	// Count of rejected packets
-	RejectedPackets() int
-
-	// Number of TCP connections being tracked
-	NumTCPConns() int
-
-	// Number of UDP connections being tracked
-	NumUDPConns() int
-
-	// Close stops the server and cleans up resources
-	Close() error
-}
 
 type server struct {
 	acceptedPackets int64
@@ -71,109 +23,14 @@ type server struct {
 	downstream     io.ReadWriter
 	opts           *Opts
 	ifAddr         string
-	bufferPool     *bpool.BytePool
+	bufferPool     BufferPool
 	fromDownstream chan *IPPacket
 	toDownstream   chan *IPPacket
 	close          chan interface{}
 }
 
-type Opts struct {
-	// IFName is the name of the interface to use for connecting upstream.
-	// If not specified, this will use the default interface for reaching the
-	// Internet.
-	IFName string
-
-	// MTU in bytes. Default of 1500 is usually fine.
-	MTU int
-
-	// BufferPoolSize is the size of the buffer pool in bytes
-	BufferPoolSize int
-
-	// BufferDepth specifies the number of outbound packets to buffer between
-	// stages in the send/receive pipeline. The default is 250.
-	BufferDepth int
-
-	// IdleTimeout specifies the amount of time before idle connections are
-	// automatically closed. The default is 65 seconds.
-	IdleTimeout time.Duration
-
-	// StatsInterval controls how frequently to display stats. Defaults to 15
-	// seconds.
-	StatsInterval time.Duration
-
-	// OnOutbound allows modifying outbound ip packets.
-	OnOutbound func(pkt *IPPacket)
-
-	// OnInbound allows modifying inbound ip packets. ft is the fourtuple to
-	// which the current connection/UDP port mapping is keyed.
-	OnInbound func(pkt *IPPacket, ft FourTuple)
-}
-
-// ApplyDefaults applies the default values to the given Opts, including making
-// a new Opts if opts is nil.
-func (opts *Opts) ApplyDefaults() error {
-	if opts == nil {
-		opts = &Opts{}
-	}
-	if opts.MTU <= 0 {
-		opts.MTU = DefaultMTU
-	}
-	if opts.BufferPoolSize <= 0 {
-		opts.BufferPoolSize = DefaultBufferPoolSize
-	}
-	if opts.BufferDepth <= 0 {
-		opts.BufferDepth = DefaultBufferDepth
-	}
-	if opts.IdleTimeout <= 0 {
-		opts.IdleTimeout = DefaultIdleTimeout
-	}
-	if opts.StatsInterval <= 0 {
-		opts.StatsInterval = DefaultStatsInterval
-	}
-	if opts.OnOutbound == nil {
-		opts.OnOutbound = func(pkt *IPPacket) {}
-	}
-	if opts.OnInbound == nil {
-		opts.OnInbound = func(pkt *IPPacket, ft FourTuple) {}
-	}
-	if opts.IFName == "" {
-		err := opts.findDefaultInterface()
-		if err != nil {
-			return errors.New("Unable to determine default interface: %v", err)
-		}
-	}
-	return nil
-}
-
-func (opts *Opts) findDefaultInterface() error {
-	// try to find default interface by dialing an external connection
-	conn, err := net.Dial("udp4", "lantern.io:80")
-	if err != nil {
-		return errors.New("Unable to dial lantern.io: %v", err)
-	}
-	ip := conn.LocalAddr().(*net.UDPAddr).IP.String()
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return errors.New("Unable to list interface: %v", err)
-	}
-	for _, iface := range ifaces {
-		addrs, err := iface.Addrs()
-		if err != nil {
-			return errors.New("Unable to list addresses of interface %v: %v", iface.Name, err)
-		}
-		for _, addr := range addrs {
-			switch t := addr.(type) {
-			case *net.IPNet:
-				if t.IP.String() == ip {
-					opts.IFName = iface.Name
-					return nil
-				}
-			}
-		}
-	}
-	return errors.New("No matching interface found for address %v", ip)
-}
-
+// NewServer constructs a new Server that reads packets from downstream
+// and writes response packets back to downstream.
 func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 	err := opts.ApplyDefaults()
 	if err != nil {
@@ -208,7 +65,7 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 		downstream:     downstream,
 		opts:           opts,
 		ifAddr:         ifAddr,
-		bufferPool:     bpool.NewBytePool(opts.BufferPoolSize/opts.MTU, opts.MTU),
+		bufferPool:     opts.BufferPool,
 		fromDownstream: make(chan *IPPacket, 2500),
 		toDownstream:   make(chan *IPPacket, 2500),
 		close:          make(chan interface{}),
