@@ -102,6 +102,11 @@ func (s *server) dispatch() {
 	}
 	defer ctrack.Close()
 
+	ctTimeout := s.opts.IdleTimeout * 2
+	if ctTimeout < MinConntrackTimeout {
+		ctTimeout = MinConntrackTimeout
+	}
+
 	// Since we're using unconnected raw sockets, the kernel doesn't create ip_conntrack
 	// entries for us. When we receive a SYNACK packet from the upstream end in response
 	// to the SYN packet that we forward from the client, the kernel automatically sends
@@ -110,7 +115,7 @@ func (s *server) dispatch() {
 	// in ip_conntrack which allows us to use a single iptables rule to safely drop
 	// all outbound RST packets for tracked tcp connections. The rule can be added like so:
 	//
-	//   iptables -A OUTPUT -p tcp -m conntrack --ctproto tcp --ctdir ORIGINAL --tcp-flags RST RST -j DROP
+	//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
 	//
 	createConntrackEntry := func(pkt *IPPacket, ft FourTuple, port uint16) error {
 		srcIP := net.ParseIP(s.ifAddr).To4()
@@ -118,12 +123,6 @@ func (s *server) dispatch() {
 		srcPort := nlenc.Uint16Bytes(port)
 		dstPort := nlenc.Uint16Bytes(ft.Dst.Port)
 		srcIP, dstIP = dstIP, srcIP
-		// srcPort, dstPort = dstPort, srcPort
-
-		timeout := s.opts.IdleTimeout * 2
-		if timeout < MinConntrackTimeout {
-			timeout = MinConntrackTimeout
-		}
 
 		attrs := []ct.ConnAttr{
 			ctAttr(ct.AttrOrigIPv4Src, srcIP),
@@ -137,11 +136,11 @@ func (s *server) dispatch() {
 			ctAttr(ct.AttrReplPortSrc, dstPort),
 			ctAttr(ct.AttrReplPortDst, srcPort),
 			ctAttr(ct.AttrStatus, nlenc.Uint32Bytes(2382430208)),
-			ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(timeout))),
+			ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(ctTimeout.Seconds()))),
 		}
 
 		if pkt.IPProto == syscall.IPPROTO_TCP {
-			attrs = append(attrs, ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(3)))
+			attrs = append(attrs, ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(3))) // ESTABLISHED
 		}
 
 		log.Debugf("Creating conntrack entry for %d %v:%v -> %v:%v", pkt.IPProto, srcIP, nlenc.Uint16(srcPort), dstIP, nlenc.Uint16(dstPort))
@@ -155,7 +154,6 @@ func (s *server) dispatch() {
 		srcPort := strconv.Itoa(int(port))
 		dstPort := strconv.Itoa(int(ft.Dst.Port))
 		srcIP, dstIP = dstIP, srcIP
-		// srcPort, dstPort = dstPort, srcPort
 
 		proto := ""
 		switch pkt.IPProto {
@@ -164,9 +162,10 @@ func (s *server) dispatch() {
 		case syscall.IPPROTO_UDP:
 			proto = "UDP"
 		}
+
 		args := []string{
 			"-I", "-u", "ASSURED",
-			"--timeout", strconv.Itoa(int(s.opts.IdleTimeout.Seconds())),
+			"--timeout", strconv.Itoa(int(ctTimeout.Seconds())),
 			"-p", proto,
 			"-s", srcIP, "-d", dstIP,
 			"-r", dstIP, "-q", srcIP,
