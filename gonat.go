@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	// MTU is 65536 to accomodate large segments
-	MTU = 65536
+	// DefaultMTU is 65536 to accomodate large segments
+	DefaultMTU = 65536
 
 	// DefaultBufferPoolSize is 10 MB
 	DefaultBufferPoolSize = 10000000
@@ -55,17 +55,15 @@ type Server interface {
 	Close() error
 }
 
-// NewBufferPool creates a buffer pool with the given sizeInBytes containing slices
-// sized to accomodate our MTU.
-func NewBufferPool(sizeInBytes int) BufferPool {
-	return bpool.NewBytePool(sizeInBytes, MTU)
-}
-
 type Opts struct {
 	// IFName is the name of the interface to use for connecting upstream.
 	// If not specified, this will use the default interface for reaching the
 	// Internet.
 	IFName string
+
+	// MTU specifies the maximum transmission unit, which can include large segments.
+	// The default value of 65536 is usually fine.
+	MTU int
 
 	// BufferPool is a pool for buffers. If not provided, default to a 10MB pool.
 	// Each []byte in the buffer pool should be 65536 bytes.
@@ -97,8 +95,11 @@ func (opts *Opts) ApplyDefaults() error {
 	if opts == nil {
 		opts = &Opts{}
 	}
+	if opts.MTU <= 0 {
+		opts.MTU = DefaultMTU
+	}
 	if opts.BufferPool == nil {
-		opts.BufferPool = NewBufferPool(DefaultBufferPoolSize)
+		opts.BufferPool = NewBufferPool(DefaultBufferPoolSize, opts.MTU)
 	}
 	if opts.BufferDepth <= 0 {
 		opts.BufferDepth = DefaultBufferDepth
@@ -151,6 +152,12 @@ func (opts *Opts) findDefaultInterface() error {
 		}
 	}
 	return errors.New("No matching interface found for address %v", ip)
+}
+
+// NewBufferPool creates a buffer pool with the given sizeInBytes containing slices
+// sized to accomodate our MTU.
+func NewBufferPool(sizeInBytes int, mtu int) BufferPool {
+	return bpool.NewBytePool(sizeInBytes, mtu)
 }
 
 // BufferPool is a bool of byte slices
