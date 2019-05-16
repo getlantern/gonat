@@ -133,6 +133,11 @@ func (s *server) dispatch() {
 			ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(s.opts.IdleTimeout.Seconds()))),
 		}
 
+		if pkt.IPProto == syscall.IPPROTO_TCP {
+			attrs = append(attrs, ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(1)))
+		}
+
+		log.Debugf("Creating conntrack entry for %d %v:%v -> %v:%v", pkt.IPProto, srcIP, nlenc.Uint16(srcPort), dstIP, nlenc.Uint16(dstPort))
 		return ctrack.Create(ct.Ct, ct.CtIPv4, attrs)
 	}
 
@@ -143,7 +148,8 @@ func (s *server) dispatch() {
 	for i := uint16(0); i < uint16(numEphemeralPorts); i++ {
 		randomPortSequence[i] = minEphemeralPort + i
 	}
-	rand.Shuffle(numEphemeralPorts, func(i int, j int) {
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rnd.Shuffle(numEphemeralPorts, func(i int, j int) {
 		randomPortSequence[i], randomPortSequence[j] = randomPortSequence[j], randomPortSequence[i]
 	})
 
@@ -202,6 +208,10 @@ func (s *server) dispatch() {
 						continue
 					}
 					connsByFT[ft] = c
+					if pkt.IPProto == syscall.IPPROTO_TCP {
+						log.Debug("Waiting")
+						time.Sleep(20 * time.Second)
+					}
 					s.addConn(pkt.IPProto)
 				}
 				s.acceptedPacket()
