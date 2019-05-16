@@ -79,8 +79,7 @@ func main() {
 			pkt.SetDest("67.205.172.79", pkt.FT().Dst.Port)
 		},
 		OnInbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple) {
-			pkt.SetDest(ft.Src.IP, ft.Src.Port)
-			pkt.SetSource("10.0.0.1", ft.Dst.Port)
+			pkt.SetSource(*tunGW, ft.Dst.Port)
 		},
 	})
 	if err != nil {

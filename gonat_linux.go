@@ -100,27 +100,13 @@ func (s *server) dispatch() {
 	}
 	defer ctrack.Close()
 
-	// // Get all IPv4 sessions
-	// sessions, err := ctrack.Dump(ct.Ct, ct.CtIPv4)
-	// if err != nil {
-	// 	fmt.Println("Could not dump sessions:", err)
-	// 	return
-	// }
-
-	// for _, x := range sessions {
-	// 	val, err := x.Uint32(ct.AttrStatus)
-	// 	log.Debugf("%v: %v", val, err)
-	// }
-
-	// log.Fatal("Done")
-
 	// Since we're using unconnected raw sockets, the kernel doesn't create ip_conntrack
 	// entries for us. When we receive a SYN,ACK packet from the upstream end in response
 	// to the SYN packet that we forward from the client, the kernel automatically sends
 	// an RST packet because it doesn't see a connection in the right state. We can't
-	// actually fake a connection in the right state, however we can manually create an "ESTABLISHED"
-	// connection in ip_conntrack which allows us to use a single iptables rule to safely drop
-	// all outbound RST packets for such connections. The rule can be added like so:
+	// actually fake a connection in the right state, however we can manually create an entry
+	// in ip_conntrack which allows us to use a single iptables rule to safely drop
+	// all outbound RST packets for established connections. The rule can be added like so:
 	//
 	//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
 	//
