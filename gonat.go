@@ -24,6 +24,9 @@ const (
 
 	// DefaultStatsInterval is 15 seconds
 	DefaultStatsInterval = 15 * time.Second
+
+	// MinConntrackTimeout sets a lower bound on how long we'll let conntrack entries persist
+	MinConntrackTimeout = 1 * time.Minute
 )
 
 const (

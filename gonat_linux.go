@@ -6,6 +6,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -118,6 +120,11 @@ func (s *server) dispatch() {
 		srcIP, dstIP = dstIP, srcIP
 		// srcPort, dstPort = dstPort, srcPort
 
+		timeout := s.opts.IdleTimeout * 2
+		if timeout < MinConntrackTimeout {
+			timeout = MinConntrackTimeout
+		}
+
 		attrs := []ct.ConnAttr{
 			ctAttr(ct.AttrOrigIPv4Src, srcIP),
 			ctAttr(ct.AttrOrigIPv4Dst, dstIP),
@@ -130,15 +137,54 @@ func (s *server) dispatch() {
 			ctAttr(ct.AttrReplPortSrc, dstPort),
 			ctAttr(ct.AttrReplPortDst, srcPort),
 			ctAttr(ct.AttrStatus, nlenc.Uint32Bytes(2382430208)),
-			ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(s.opts.IdleTimeout.Seconds()))),
+			ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(timeout))),
 		}
 
 		if pkt.IPProto == syscall.IPPROTO_TCP {
-			attrs = append(attrs, ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(1)))
+			attrs = append(attrs, ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(3)))
 		}
 
 		log.Debugf("Creating conntrack entry for %d %v:%v -> %v:%v", pkt.IPProto, srcIP, nlenc.Uint16(srcPort), dstIP, nlenc.Uint16(dstPort))
 		return ctrack.Create(ct.Ct, ct.CtIPv4, attrs)
+	}
+
+	// For now, we use the conntrack command since the library doesn't seem to work for TCP
+	createConntrackEntry = func(pkt *IPPacket, ft FourTuple, port uint16) error {
+		srcIP := s.ifAddr
+		dstIP := ft.Dst.IP
+		srcPort := strconv.Itoa(int(port))
+		dstPort := strconv.Itoa(int(ft.Dst.Port))
+		srcIP, dstIP = dstIP, srcIP
+		// srcPort, dstPort = dstPort, srcPort
+
+		proto := ""
+		switch pkt.IPProto {
+		case syscall.IPPROTO_TCP:
+			proto = "TCP"
+		case syscall.IPPROTO_UDP:
+			proto = "UDP"
+		}
+		args := []string{
+			"-I", "-u", "ASSURED",
+			"--timeout", strconv.Itoa(int(s.opts.IdleTimeout.Seconds())),
+			"-p", proto,
+			"-s", srcIP, "-d", dstIP,
+			"-r", dstIP, "-q", srcIP,
+			"--sport", srcPort, "--dport", dstPort,
+			"--reply-port-src", dstPort, "--reply-port-dst", srcPort,
+		}
+
+		if pkt.IPProto == syscall.IPPROTO_TCP {
+			args = append(args, "--state", "ESTABLISHED")
+		}
+
+		log.Debugf("Creating conntrack entry for %v", args)
+		cmd := exec.Command("conntrack", args...)
+		err := cmd.Run()
+		if err != nil {
+			err = errors.New("Unable to add conntrack entry with args %v: %v", args, err)
+		}
+		return err
 	}
 
 	// We create a random order for assigning new ports to minimize the chance of colliding
@@ -208,10 +254,6 @@ func (s *server) dispatch() {
 						continue
 					}
 					connsByFT[ft] = c
-					if pkt.IPProto == syscall.IPPROTO_TCP {
-						log.Debug("Waiting")
-						time.Sleep(20 * time.Second)
-					}
 					s.addConn(pkt.IPProto)
 				}
 				s.acceptedPacket()
