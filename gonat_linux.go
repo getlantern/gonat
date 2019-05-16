@@ -6,13 +6,13 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"os/exec"
-	"strconv"
 	"syscall"
 	"time"
 
+	ct "github.com/florianl/go-conntrack"
 	"github.com/getlantern/errors"
 	"github.com/getlantern/golog"
+	"github.com/mdlayher/netlink/nlenc"
 	"github.com/oxtoacart/bpool"
 )
 
@@ -223,6 +223,10 @@ func (s *server) Serve() error {
 	return s.readFromDownstream()
 }
 
+func ctAttr(t ct.ConnAttrType, d []byte) ct.ConnAttr {
+	return ct.ConnAttr{Type: t, Data: d}
+}
+
 func (s *server) dispatch() {
 	reapTicker := time.NewTicker(1 * time.Second)
 	defer reapTicker.Stop()
@@ -231,6 +235,27 @@ func (s *server) dispatch() {
 		syscall.IPPROTO_TCP: make(map[FourTuple]*conn),
 		syscall.IPPROTO_UDP: make(map[FourTuple]*conn),
 	}
+
+	ctrack, err := ct.Open(&ct.Config{})
+	if err != nil {
+		log.Errorf("Unable to create conntrack connection: %v", err)
+		return
+	}
+	defer ctrack.Close()
+
+	// // Get all IPv4 sessions
+	// sessions, err := ctrack.Dump(ct.Ct, ct.CtIPv4)
+	// if err != nil {
+	// 	fmt.Println("Could not dump sessions:", err)
+	// 	return
+	// }
+
+	// for _, x := range sessions {
+	// 	val, err := x.Uint32(ct.AttrStatus)
+	// 	log.Debugf("%v: %v", val, err)
+	// }
+
+	// log.Fatal("Done")
 
 	// Since we're using unconnected raw sockets, the kernel doesn't create ip_conntrack
 	// entries for us. When we receive a SYN,ACK packet from the upstream end in response
@@ -243,40 +268,29 @@ func (s *server) dispatch() {
 	//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
 	//
 	createConntrackEntry := func(pkt *IPPacket, ft FourTuple, port uint16) error {
-		srcIP := s.ifAddr
-		dstIP := ft.Dst.IP
-		srcPort := strconv.Itoa(int(port))
-		dstPort := strconv.Itoa(int(ft.Dst.Port))
+		srcIP := net.ParseIP(s.ifAddr).To4()
+		dstIP := pkt.DstAddr.IP.To4()
+		srcPort := nlenc.Uint16Bytes(port)
+		dstPort := nlenc.Uint16Bytes(ft.Dst.Port)
 		srcIP, dstIP = dstIP, srcIP
 		// srcPort, dstPort = dstPort, srcPort
 
-		proto := ""
-		switch pkt.IPProto {
-		case syscall.IPPROTO_TCP:
-			proto = "TCP"
-		case syscall.IPPROTO_UDP:
-			proto = "UDP"
-		}
-		args := []string{
-			"-I", "-u", "ASSURED",
-			"--timeout", strconv.Itoa(int(s.opts.IdleTimeout.Seconds())),
-			"-p", proto,
-			"-s", srcIP, "-d", dstIP,
-			"-r", dstIP, "-q", srcIP,
-			"--sport", srcPort, "--dport", dstPort,
-			"--reply-port-src", dstPort, "--reply-port-dst", srcPort,
+		attrs := []ct.ConnAttr{
+			ctAttr(ct.AttrOrigIPv4Src, srcIP),
+			ctAttr(ct.AttrOrigIPv4Dst, dstIP),
+			ctAttr(ct.AttrReplIPv4Src, dstIP),
+			ctAttr(ct.AttrReplIPv4Dst, srcIP),
+			ctAttr(ct.AttrOrigL4Proto, nlenc.Uint8Bytes(pkt.IPProto)),
+			ctAttr(ct.AttrReplL4Proto, nlenc.Uint8Bytes(pkt.IPProto)),
+			ctAttr(ct.AttrOrigPortSrc, srcPort),
+			ctAttr(ct.AttrOrigPortDst, dstPort),
+			ctAttr(ct.AttrReplPortSrc, dstPort),
+			ctAttr(ct.AttrReplPortDst, srcPort),
+			ctAttr(ct.AttrStatus, nlenc.Uint32Bytes(2382430208)),
+			ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(s.opts.IdleTimeout.Seconds()))),
 		}
 
-		if pkt.IPProto == syscall.IPPROTO_TCP {
-			args = append(args, "--state", "ESTABLISHED")
-		}
-
-		cmd := exec.Command("conntrack", args...)
-		err := cmd.Run()
-		if err != nil {
-			err = errors.New("Unable to add conntrack entry with args %v: %v", args, err)
-		}
-		return err
+		return ctrack.Create(ct.Ct, ct.CtIPv4, attrs)
 	}
 
 	// We create a random order for assigning new ports to minimize the chance of colliding
