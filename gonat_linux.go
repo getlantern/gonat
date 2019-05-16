@@ -101,14 +101,14 @@ func (s *server) dispatch() {
 	defer ctrack.Close()
 
 	// Since we're using unconnected raw sockets, the kernel doesn't create ip_conntrack
-	// entries for us. When we receive a SYN,ACK packet from the upstream end in response
+	// entries for us. When we receive a SYNACK packet from the upstream end in response
 	// to the SYN packet that we forward from the client, the kernel automatically sends
 	// an RST packet because it doesn't see a connection in the right state. We can't
 	// actually fake a connection in the right state, however we can manually create an entry
 	// in ip_conntrack which allows us to use a single iptables rule to safely drop
-	// all outbound RST packets for established connections. The rule can be added like so:
+	// all outbound RST packets for tracked tcp connections. The rule can be added like so:
 	//
-	//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
+	//   iptables -A OUTPUT -p tcp -m conntrack --ctproto tcp --ctdir ORIGINAL --tcp-flags RST RST -j DROP
 	//
 	createConntrackEntry := func(pkt *IPPacket, ft FourTuple, port uint16) error {
 		srcIP := net.ParseIP(s.ifAddr).To4()

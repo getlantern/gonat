@@ -5,8 +5,7 @@ via netlink.
 
 `sudo setcap CAP_NET_RAW,CAP_NET_ADMIN+ep` might be enough?
 
-iptables needs to be configured to drop the outbound RST packets that it would usually create.
+iptables needs to be configured to drop the outbound RST packets that it would usually create. We do this only
+for tcp connections that are already in conntrack (which are added to conntrack by the library itself).
 
-`sudo iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP`
-
-Note that we ensure the connection is "ESTABLISHED" by modifying conntrack table directly.
+`sudo iptables -A OUTPUT -p tcp -m conntrack --ctproto tcp --ctdir ORIGINAL --tcp-flags RST RST -j DROP`
