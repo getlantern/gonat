@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/getlantern/golog"
 	"github.com/getlantern/gonat"
@@ -24,7 +25,7 @@ var (
 	tunMask   = flag.String("tun-mask", "255.255.255.0", "tun device netmask")
 	tunGW     = flag.String("tun-gw", "10.0.0.1", "tun device gateway")
 	ifOut     = flag.String("ifout", "", "name of interface to use for outbound connections")
-	tcpDest   = flag.String("tcpdest", "speedtest-ny.turnkeyinternet.net", "destination to which to connect all TCP traffic")
+	tcpDest   = flag.String("tcpdest", "80.249.99.148", "destination to which to connect all TCP traffic")
 	udpDest   = flag.String("udpdest", "8.8.8.8", "destination to which to connect all UDP traffic")
 	pprofAddr = flag.String("pprofaddr", "", "pprof address to listen on, not activate pprof if empty")
 )
@@ -74,9 +75,10 @@ func main() {
 	}()
 
 	s, err := gonat.NewServer(dev, &gonat.Opts{
-		IFName: *ifOut,
+		IFName:      *ifOut,
+		IdleTimeout: 5 * time.Second,
 		OnOutbound: func(pkt *gonat.IPPacket) {
-			pkt.SetDest("67.205.172.79", pkt.FT().Dst.Port)
+			pkt.SetDest(*tcpDest, pkt.FT().Dst.Port)
 		},
 		OnInbound: func(pkt *gonat.IPPacket, ft gonat.FourTuple) {
 			pkt.SetSource(*tunGW, ft.Dst.Port)

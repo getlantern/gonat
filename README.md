@@ -10,3 +10,11 @@ for tcp connections that are already in ESTABLISHED in conntrack. The library ma
 we're using raw sockets.
 
 `sudo iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP`
+
+This requires the nf_conntrack module to be installed, along with the conntrack command.
+
+```
+modprobe nf_conntrack
+modprobe nf_conntrack_ipv4
+apt-get install conntrack
+```

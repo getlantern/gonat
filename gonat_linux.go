@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,6 +28,7 @@ type server struct {
 	bufferPool     BufferPool
 	fromDownstream chan *IPPacket
 	toDownstream   chan *IPPacket
+	closedConns    chan *conn
 	close          chan interface{}
 }
 
@@ -44,8 +46,9 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 		downstream:     downstream,
 		opts:           opts,
 		bufferPool:     opts.BufferPool,
-		fromDownstream: make(chan *IPPacket, 2500),
-		toDownstream:   make(chan *IPPacket, 2500),
+		fromDownstream: make(chan *IPPacket, opts.BufferDepth),
+		toDownstream:   make(chan *IPPacket, opts.BufferDepth),
+		closedConns:    make(chan *conn, opts.BufferDepth),
 		close:          make(chan interface{}),
 	}
 	return s, nil
@@ -60,6 +63,39 @@ func (s *server) Serve() error {
 
 func ctAttr(t ct.ConnAttrType, d []byte) ct.ConnAttr {
 	return ct.ConnAttr{Type: t, Data: d}
+}
+
+func (s *server) conntrackArgsFor(op string, ctTimeout time.Duration, ipProto uint8, ft FourTuple, port uint16) []string {
+	srcIP := s.opts.IFAddr
+	dstIP := ft.Dst.IP
+	srcPort := strconv.Itoa(int(port))
+	dstPort := strconv.Itoa(int(ft.Dst.Port))
+
+	proto := ""
+	switch ipProto {
+	case syscall.IPPROTO_TCP:
+		proto = "TCP"
+	case syscall.IPPROTO_UDP:
+		proto = "UDP"
+	}
+
+	args := []string{"-" + op}
+	if op == "I" {
+		args = append(args, "-u", "ASSURED", "--timeout", strconv.Itoa(int(ctTimeout.Seconds())))
+	}
+	args = append(args,
+		"-p", proto,
+		"-s", srcIP, "-d", dstIP,
+		"-r", dstIP, "-q", srcIP,
+		"--sport", srcPort, "--dport", dstPort,
+		"--reply-port-src", dstPort, "--reply-port-dst", srcPort,
+	)
+
+	if op == "I" && ipProto == syscall.IPPROTO_TCP {
+		args = append(args, "--state", "ESTABLISHED")
+	}
+
+	return args
 }
 
 func (s *server) dispatch() {
@@ -93,9 +129,9 @@ func (s *server) dispatch() {
 	//
 	//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
 	//
-	createConntrackEntry := func(pkt *IPPacket, ft FourTuple, port uint16) error {
+	createConntrackEntry := func(ipProto uint8, ft FourTuple, port uint16) error {
 		srcIP := net.ParseIP(s.opts.IFAddr).To4()
-		dstIP := pkt.DstAddr.IP.To4()
+		dstIP := net.ParseIP(ft.Dst.IP).To4()
 		srcPort := nlenc.Uint16Bytes(port)
 		dstPort := nlenc.Uint16Bytes(ft.Dst.Port)
 
@@ -104,8 +140,8 @@ func (s *server) dispatch() {
 			ctAttr(ct.AttrOrigIPv4Dst, dstIP),
 			ctAttr(ct.AttrReplIPv4Src, dstIP),
 			ctAttr(ct.AttrReplIPv4Dst, srcIP),
-			ctAttr(ct.AttrOrigL4Proto, nlenc.Uint8Bytes(pkt.IPProto)),
-			ctAttr(ct.AttrReplL4Proto, nlenc.Uint8Bytes(pkt.IPProto)),
+			ctAttr(ct.AttrOrigL4Proto, nlenc.Uint8Bytes(ipProto)),
+			ctAttr(ct.AttrReplL4Proto, nlenc.Uint8Bytes(ipProto)),
 			ctAttr(ct.AttrOrigPortSrc, srcPort),
 			ctAttr(ct.AttrOrigPortDst, dstPort),
 			ctAttr(ct.AttrReplPortSrc, dstPort),
@@ -114,50 +150,31 @@ func (s *server) dispatch() {
 			ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(ctTimeout.Seconds()))),
 		}
 
-		if pkt.IPProto == syscall.IPPROTO_TCP {
+		if ipProto == syscall.IPPROTO_TCP {
 			attrs = append(attrs, ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(3))) // ESTABLISHED
 		}
 
-		log.Debugf("Creating conntrack entry for %d %v:%v -> %v:%v", pkt.IPProto, srcIP, nlenc.Uint16(srcPort), dstIP, nlenc.Uint16(dstPort))
+		log.Debugf("Creating conntrack entry for %d %v:%v -> %v:%v", ipProto, srcIP, nlenc.Uint16(srcPort), dstIP, nlenc.Uint16(dstPort))
 		return ctrack.Create(ct.Ct, ct.CtIPv4, attrs)
 	}
 
 	// For now, we use the conntrack command since the library doesn't seem to work for TCP
-	createConntrackEntry = func(pkt *IPPacket, ft FourTuple, port uint16) error {
-		srcIP := s.opts.IFAddr
-		dstIP := ft.Dst.IP
-		srcPort := strconv.Itoa(int(port))
-		dstPort := strconv.Itoa(int(ft.Dst.Port))
-
-		proto := ""
-		switch pkt.IPProto {
-		case syscall.IPPROTO_TCP:
-			proto = "TCP"
-		case syscall.IPPROTO_UDP:
-			proto = "UDP"
-		}
-
-		args := []string{
-			"-I", "-u", "ASSURED",
-			"--timeout", strconv.Itoa(int(ctTimeout.Seconds())),
-			"-p", proto,
-			"-s", srcIP, "-d", dstIP,
-			"-r", dstIP, "-q", srcIP,
-			"--sport", srcPort, "--dport", dstPort,
-			"--reply-port-src", dstPort, "--reply-port-dst", srcPort,
-		}
-
-		if pkt.IPProto == syscall.IPPROTO_TCP {
-			args = append(args, "--state", "ESTABLISHED")
-		}
-
-		log.Debugf("Creating conntrack entry for %v", args)
+	createConntrackEntry = func(ipProto uint8, ft FourTuple, port uint16) error {
+		args := s.conntrackArgsFor("I", ctTimeout, ipProto, ft, port)
 		cmd := exec.Command("conntrack", args...)
 		err := cmd.Run()
 		if err != nil {
 			err = errors.New("Unable to add conntrack entry with args %v: %v", args, err)
 		}
 		return err
+	}
+
+	deleteConntrackEntry := func(ipProto uint8, ft FourTuple, port uint16) {
+		args := s.conntrackArgsFor("D", ctTimeout, ipProto, ft, port)
+		cmd := exec.Command("conntrack", args...)
+		if err := cmd.Run(); err != nil {
+			log.Errorf("Unable to delete conntrack entry with args %v: %v", args, err)
+		}
 	}
 
 	// We create a random order for assigning new ports to minimize the chance of colliding
@@ -191,7 +208,7 @@ func (s *server) dispatch() {
 			}
 			portIndexesByOrigin[ft.Dst] = portIndex
 			port = randomPortSequence[portIndex]
-			err = createConntrackEntry(pkt, ft, port)
+			err = createConntrackEntry(pkt.IPProto, ft, port)
 			if err != nil {
 				// this can happen if this fourtuple is already tracked, ignore and retry
 				continue
@@ -200,6 +217,25 @@ func (s *server) dispatch() {
 		}
 		err = errors.New("Gave up looking for ephemeral port, final error from conntrack: %v", err)
 		return
+	}
+
+	reapIdleConns := func() {
+		var connsToClose []*conn
+		for _, connsByFT := range conns {
+			for _, c := range connsByFT {
+				if c.timeSinceLastActive() > s.opts.IdleTimeout {
+					connsToClose = append(connsToClose, c)
+				}
+			}
+		}
+		if len(connsToClose) > 0 {
+			// close conns on a goroutine to avoid tying up main dispatch loop
+			go func() {
+				for _, c := range connsToClose {
+					c.Close()
+				}
+			}()
+		}
 	}
 
 	for {
@@ -211,6 +247,15 @@ func (s *server) dispatch() {
 				ft := pkt.FT()
 				connsByFT := conns[pkt.IPProto]
 				c := connsByFT[ft]
+
+				if pkt.HasTCPFlag(TCPFlagRST) {
+					log.Debugf("Got RST packet: %v", ft)
+					if c != nil {
+						c.Close()
+					}
+					continue
+				}
+
 				if c == nil {
 					port, err := assignPort(pkt, ft)
 					if err != nil {
@@ -237,10 +282,21 @@ func (s *server) dispatch() {
 				log.Tracef("Unknown IP protocol, ignoring: %v", pkt.IPProto)
 				continue
 			}
+		case c := <-s.closedConns:
+			delete(conns[c.ipProto], c.ft)
+			deleteConntrackEntry(c.ipProto, c.ft, c.port)
 		case <-reapTicker.C:
-			// p.reapTCP()
-			// p.reapUDP()
+			reapIdleConns()
 		case <-s.close:
+			for _, connsByFT := range conns {
+				for _, c := range connsByFT {
+					if c.timeSinceLastActive() > s.opts.IdleTimeout {
+						c.Close()
+						delete(conns[c.ipProto], c.ft)
+						deleteConntrackEntry(c.ipProto, c.ft, c.port)
+					}
+				}
+			}
 			return
 		}
 	}
@@ -249,8 +305,8 @@ func (s *server) dispatch() {
 // newConn creates a connection built around a raw socket for either TCP or UDP
 // (depending no the specified proto). Being a raw socket, it allows us to send our
 // own IP packets.
-func (s *server) newConn(proto uint8, ft FourTuple, port uint16) (*conn, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, int(proto))
+func (s *server) newConn(ipProto uint8, ft FourTuple, port uint16) (*conn, error) {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, int(ipProto))
 	if err != nil {
 		return nil, errors.New("Unable to create transport: %v", err)
 	}
@@ -268,10 +324,12 @@ func (s *server) newConn(proto uint8, ft FourTuple, port uint16) (*conn, error) 
 	file := os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd))
 	c := &conn{
 		ReadWriteCloser: file,
-		port:            port,
+		ipProto:         ipProto,
 		ft:              ft,
+		port:            port,
 		toUpstream:      make(chan *IPPacket, s.opts.BufferDepth),
 		s:               s,
+		close:           make(chan interface{}),
 	}
 	go c.readFromUpstream()
 	go c.writeToUpstream()
@@ -289,25 +347,41 @@ func sockAddrFor(ip string, port uint16) syscall.Sockaddr {
 
 type conn struct {
 	io.ReadWriteCloser
+	ipProto    uint8
 	ft         FourTuple
 	port       uint16
 	toUpstream chan *IPPacket
 	s          *server
+	lastActive int64
+	close      chan interface{}
 }
 
 func (c *conn) writeToUpstream() {
-	for pkt := range c.toUpstream {
-		pkt.SetSource(c.s.opts.IFAddr, c.port)
-		pkt.recalcChecksum()
-		_, err := c.Write(pkt.Raw)
-		if err != nil {
-			log.Errorf("Error writing upstream: %v", err)
+	defer func() {
+		c.s.closedConns <- c
+	}()
+	defer c.ReadWriteCloser.Close()
+
+	for {
+		select {
+		case pkt := <-c.toUpstream:
+			pkt.SetSource(c.s.opts.IFAddr, c.port)
+			pkt.recalcChecksum()
+			_, err := c.Write(pkt.Raw)
+			if err != nil {
+				log.Errorf("Error writing upstream: %v", err)
+				return
+			}
+			c.markActive()
+		case <-c.close:
 			return
 		}
 	}
 }
 
 func (c *conn) readFromUpstream() {
+	defer c.Close()
+
 	for {
 		b := c.s.bufferPool.Get()
 		n, err := c.Read(b)
@@ -319,6 +393,7 @@ func (c *conn) readFromUpstream() {
 			}
 			return
 		}
+		c.markActive()
 		if pkt, err := parseIPPacket(b[:n]); err != nil {
 			c.s.rejectedPacket()
 			c.s.bufferPool.Put(b)
@@ -329,6 +404,25 @@ func (c *conn) readFromUpstream() {
 			c.s.acceptedPacket()
 			c.s.toDownstream <- pkt
 		}
+	}
+}
+
+func (c *conn) markActive() {
+	atomic.StoreInt64(&c.lastActive, time.Now().UnixNano())
+}
+
+func (c *conn) timeSinceLastActive() time.Duration {
+	return time.Duration(time.Now().UnixNano() - atomic.LoadInt64(&c.lastActive))
+}
+
+func (c *conn) Close() error {
+	select {
+	case <-c.close:
+		return nil
+	default:
+		log.Debugf("Closing %v", c.ft)
+		close(c.close)
+		return nil
 	}
 }
 
