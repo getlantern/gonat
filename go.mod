@@ -13,6 +13,8 @@ require (
 	github.com/getlantern/netx v0.0.0-20190110220209-9912de6f94fd // indirect
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
+	github.com/google/gopacket v1.1.17
 	github.com/mdlayher/netlink v0.0.0-20190514163018-336c8d74f4a0
 	github.com/oxtoacart/bpool v0.0.0-20190227141107-8c4636f812cc
+	github.com/stretchr/testify v1.3.0
 )

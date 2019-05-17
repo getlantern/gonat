@@ -49,6 +49,7 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 	}
 	ifAddr := ""
 	for _, outIFAddr := range outIFAddrs {
+		log.Debugf("Checking %v", outIFAddr)
 		switch t := outIFAddr.(type) {
 		case *net.IPNet:
 			ipv4 := t.IP.To4()
@@ -61,7 +62,7 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 	if ifAddr == "" {
 		return nil, errors.New("Unable to find IPv4 address for interface %v", opts.IFName)
 	}
-	log.Debugf("Outbound packets will use %v", ifAddr)
+	log.Debugf("Outbound packets will use %v on %v", ifAddr, opts.IFName)
 
 	s := &server{
 		downstream:     downstream,
