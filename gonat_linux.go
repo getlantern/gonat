@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"reflect"
 	"strconv"
 	"syscall"
 	"time"
@@ -25,7 +24,6 @@ type server struct {
 
 	downstream     io.ReadWriter
 	opts           *Opts
-	ifAddr         string
 	bufferPool     BufferPool
 	fromDownstream chan *IPPacket
 	toDownstream   chan *IPPacket
@@ -40,35 +38,11 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 		return nil, errors.New("Error applying default options: %v", err)
 	}
 
-	outIF, err := net.InterfaceByName(opts.IFName)
-	if err != nil {
-		return nil, errors.New("Unable to find interface for interface %v: %v", opts.IFName, err)
-	}
-	outIFAddrs, err := outIF.Addrs()
-	if err != nil {
-		return nil, errors.New("Unable to get addresses for interface %v: %v", opts.IFName, err)
-	}
-	ifAddr := ""
-	for _, outIFAddr := range outIFAddrs {
-		log.Debugf("Checking %v (%v)", outIFAddr, reflect.TypeOf(outIFAddr))
-		switch t := outIFAddr.(type) {
-		case *net.IPNet:
-			ipv4 := t.IP.To4()
-			if ipv4 != nil {
-				ifAddr = ipv4.String()
-				break
-			}
-		}
-	}
-	if ifAddr == "" {
-		return nil, errors.New("Unable to find IPv4 address for interface %v", opts.IFName)
-	}
-	log.Debugf("Outbound packets will use %v on %v", ifAddr, opts.IFName)
+	log.Debugf("Outbound packets will use %v", opts.IFAddr)
 
 	s := &server{
 		downstream:     downstream,
 		opts:           opts,
-		ifAddr:         ifAddr,
 		bufferPool:     opts.BufferPool,
 		fromDownstream: make(chan *IPPacket, 2500),
 		toDownstream:   make(chan *IPPacket, 2500),
@@ -120,7 +94,7 @@ func (s *server) dispatch() {
 	//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
 	//
 	createConntrackEntry := func(pkt *IPPacket, ft FourTuple, port uint16) error {
-		srcIP := net.ParseIP(s.ifAddr).To4()
+		srcIP := net.ParseIP(s.opts.IFAddr).To4()
 		dstIP := pkt.DstAddr.IP.To4()
 		srcPort := nlenc.Uint16Bytes(port)
 		dstPort := nlenc.Uint16Bytes(ft.Dst.Port)
@@ -151,7 +125,7 @@ func (s *server) dispatch() {
 
 	// For now, we use the conntrack command since the library doesn't seem to work for TCP
 	createConntrackEntry = func(pkt *IPPacket, ft FourTuple, port uint16) error {
-		srcIP := s.ifAddr
+		srcIP := s.opts.IFAddr
 		dstIP := ft.Dst.IP
 		srcPort := strconv.Itoa(int(port))
 		dstPort := strconv.Itoa(int(ft.Dst.Port))
@@ -285,7 +259,7 @@ func (s *server) newConn(proto uint8, ft FourTuple, port uint16) (*conn, error) 
 	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_HDRINCL, 1); err != nil {
 		return nil, errors.New("Unable to set IP_HDRINCL: %v", err)
 	}
-	bindAddr := sockAddrFor(s.ifAddr, port)
+	bindAddr := sockAddrFor(s.opts.IFAddr, port)
 	if err := syscall.Bind(fd, bindAddr); err != nil {
 		return nil, errors.New("Unable to bind raw socket: %v", err)
 	}
@@ -325,7 +299,7 @@ type conn struct {
 
 func (c *conn) writeToUpstream() {
 	for pkt := range c.toUpstream {
-		pkt.SetSource(c.s.ifAddr, c.port)
+		pkt.SetSource(c.s.opts.IFAddr, c.port)
 		pkt.recalcChecksum()
 		_, err := c.Write(pkt.Raw)
 		if err != nil {

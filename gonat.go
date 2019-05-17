@@ -64,6 +64,10 @@ type Opts struct {
 	// Internet.
 	IFName string
 
+	// IFAddr is the address to use for outbound packets. Overrides the IFName
+	// when specified.
+	IFAddr string
+
 	// MTU specifies the maximum transmission unit, which can include large segments.
 	// The default value of 65536 is usually fine.
 	MTU int
@@ -119,42 +123,49 @@ func (opts *Opts) ApplyDefaults() error {
 	if opts.OnInbound == nil {
 		opts.OnInbound = func(pkt *IPPacket, ft FourTuple) {}
 	}
-	if opts.IFName == "" {
-		err := opts.findDefaultInterface()
+	if opts.IFAddr == "" {
+		var err error
+		if opts.IFName != "" {
+			opts.IFAddr, err = firstIPv4AddrFor(opts.IFName)
+		} else {
+			opts.IFAddr, err = findDefaultIPv4Addr()
+		}
 		if err != nil {
-			return errors.New("Unable to determine default interface: %v", err)
+			return err
 		}
 	}
 	return nil
 }
 
-func (opts *Opts) findDefaultInterface() error {
-	// try to find default interface by dialing an external connection
-	conn, err := net.Dial("udp4", "lantern.io:80")
+func firstIPv4AddrFor(ifName string) (string, error) {
+	outIF, err := net.InterfaceByName(ifName)
 	if err != nil {
-		return errors.New("Unable to dial lantern.io: %v", err)
+		return "", errors.New("Unable to find interface for interface %v: %v", ifName, err)
 	}
-	ip := conn.LocalAddr().(*net.UDPAddr).IP.String()
-	ifaces, err := net.Interfaces()
+	outIFAddrs, err := outIF.Addrs()
 	if err != nil {
-		return errors.New("Unable to list interface: %v", err)
+		return "", errors.New("Unable to get addresses for interface %v: %v", ifName, err)
 	}
-	for _, iface := range ifaces {
-		addrs, err := iface.Addrs()
-		if err != nil {
-			return errors.New("Unable to list addresses of interface %v: %v", iface.Name, err)
-		}
-		for _, addr := range addrs {
-			switch t := addr.(type) {
-			case *net.IPNet:
-				if t.IP.String() == ip {
-					opts.IFName = iface.Name
-					return nil
-				}
+	for _, outIFAddr := range outIFAddrs {
+		switch t := outIFAddr.(type) {
+		case *net.IPNet:
+			ipv4 := t.IP.To4()
+			if ipv4 != nil {
+				return ipv4.String(), nil
 			}
 		}
 	}
-	return errors.New("No matching interface found for address %v", ip)
+	return "", errors.New("Unable to find IPv4 address for interface %v", ifName)
+}
+
+func findDefaultIPv4Addr() (string, error) {
+	// try to find default interface by dialing an external connection
+	conn, err := net.Dial("udp4", "lantern.io:80")
+	if err != nil {
+		return "", errors.New("Unable to dial lantern.io: %v", err)
+	}
+	ip := conn.LocalAddr().(*net.UDPAddr).IP.String()
+	return ip, nil
 }
 
 // NewBufferPool creates a buffer pool with the given sizeInBytes containing slices
