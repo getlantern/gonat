@@ -77,6 +77,7 @@ func main() {
 	s, err := gonat.NewServer(dev, &gonat.Opts{
 		IFName:      *ifOut,
 		IdleTimeout: 5 * time.Second,
+		BufferDepth: 10000,
 		OnOutbound: func(pkt *gonat.IPPacket) {
 			pkt.SetDest(*tcpDest, pkt.FT().Dst.Port)
 		},

@@ -249,7 +249,6 @@ func (s *server) dispatch() {
 				c := connsByFT[ft]
 
 				if pkt.HasTCPFlag(TCPFlagRST) {
-					log.Debugf("Got RST packet: %v", ft)
 					if c != nil {
 						c.Close()
 					}
@@ -311,15 +310,22 @@ func (s *server) newConn(ipProto uint8, ft FourTuple, port uint16) (*conn, error
 		return nil, errors.New("Unable to create transport: %v", err)
 	}
 	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_HDRINCL, 1); err != nil {
+		syscall.Close(fd)
 		return nil, errors.New("Unable to set IP_HDRINCL: %v", err)
 	}
 	bindAddr := sockAddrFor(s.opts.IFAddr, port)
 	if err := syscall.Bind(fd, bindAddr); err != nil {
+		syscall.Close(fd)
 		return nil, errors.New("Unable to bind raw socket: %v", err)
 	}
 	connectAddr := sockAddrFor(ft.Dst.IP, ft.Dst.Port)
 	if err := syscall.Connect(fd, connectAddr); err != nil {
+		syscall.Close(fd)
 		return nil, errors.New("Unable to connect raw socket: %v", err)
+	}
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		syscall.Close(fd)
+		return nil, errors.New("Unable to set raw socket to non-blocking: %v", err)
 	}
 	file := os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd))
 	c := &conn{
@@ -420,7 +426,6 @@ func (c *conn) Close() error {
 	case <-c.close:
 		return nil
 	default:
-		log.Debugf("Closing %v", c.ft)
 		close(c.close)
 		return nil
 	}
