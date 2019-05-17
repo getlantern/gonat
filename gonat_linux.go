@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"syscall"
 	"time"
@@ -49,7 +50,7 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 	}
 	ifAddr := ""
 	for _, outIFAddr := range outIFAddrs {
-		log.Debugf("Checking %v", outIFAddr)
+		log.Debugf("Checking %v (%v)", outIFAddr, reflect.TypeOf(outIFAddr))
 		switch t := outIFAddr.(type) {
 		case *net.IPNet:
 			ipv4 := t.IP.To4()
