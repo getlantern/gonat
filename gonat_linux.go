@@ -98,7 +98,6 @@ func (s *server) dispatch() {
 		dstIP := pkt.DstAddr.IP.To4()
 		srcPort := nlenc.Uint16Bytes(port)
 		dstPort := nlenc.Uint16Bytes(ft.Dst.Port)
-		srcIP, dstIP = dstIP, srcIP
 
 		attrs := []ct.ConnAttr{
 			ctAttr(ct.AttrOrigIPv4Src, srcIP),
@@ -129,7 +128,6 @@ func (s *server) dispatch() {
 		dstIP := ft.Dst.IP
 		srcPort := strconv.Itoa(int(port))
 		dstPort := strconv.Itoa(int(ft.Dst.Port))
-		srcIP, dstIP = dstIP, srcIP
 
 		proto := ""
 		switch pkt.IPProto {
