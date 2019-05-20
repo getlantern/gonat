@@ -16,15 +16,7 @@ import (
 
 // TCPFlags are the different flags supported in the TCP header
 const (
-	TCPFlagNS = 1 << iota
-	TCPFlagCWR
-	TCPFlagECE
-	TCPFlagURG
-	TCPFlagACK
-	TCPFlagPSH
-	TCPFlagRST
-	TCPFlagSYN
-	TCPFlagFIN
+	TCPFlagRST = 0x04
 )
 
 var (
@@ -75,7 +67,7 @@ func (pkt *IPPacket) parseV4() (*IPPacket, error) {
 
 // HasTCPFlag returns true if the packet is a TCP packet that has the given flag set.
 func (pkt *IPPacket) HasTCPFlag(flag uint8) bool {
-	return pkt.IPProto == syscall.IPPROTO_TCP && pkt.Payload[12]&flag != 0
+	return pkt.IPProto == syscall.IPPROTO_TCP && pkt.Payload[13]&flag != 0
 }
 
 func (pkt *IPPacket) SetSource(host string, port uint16) {

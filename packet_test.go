@@ -2,6 +2,7 @@ package gonat
 
 import (
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/google/gopacket"
@@ -20,14 +21,36 @@ func TestTCP(t *testing.T) {
 		return
 	}
 
-	assert.Equal(t, "192.168.1.230:43212", pkt.ft().src.String())
-	assert.Equal(t, "80.249.99.148:80", pkt.ft().dst.String())
+	assert.Equal(t, "192.168.1.230:43212", pkt.FT().Src.String())
+	assert.Equal(t, "80.249.99.148:80", pkt.FT().Dst.String())
 
 	pkt.recalcIPChecksum()
 	pkt.recalcTCPChecksum()
 	expectedIPChecksum, expectedTCPChecksum := checksumsViaGoPacket(raw)
 	assert.Equal(t, expectedIPChecksum, pkt.ipChecksum())
 	assert.Equal(t, expectedTCPChecksum, pkt.tcpChecksum())
+}
+
+func TestHasRST(t *testing.T) {
+	withRST, err := hex.DecodeString("450000280000400040063cce7f0000017f0000012710cc98000000003e4e28c15014000057160000")
+	if !assert.NoError(t, err) {
+		return
+	}
+	pkt, err := parseIPPacket(withRST)
+	if !assert.NoError(t, err) {
+		return
+	}
+	assert.True(t, pkt.HasTCPFlag(TCPFlagRST))
+
+	withoutRST, err := hex.DecodeString(strings.Replace("45 00 00 48 4B 3E 40 00 40 06 DB 6F 0A 00 00 02 50 F9 63 94 CE AA 00 50 58 38 DD 0B 4A 59 0E F1 D0 10 60 00 3A EB 00 00 01 01 08 0A 98 0D 1B AA AF 42 43 CD 01 01 05 12 4A 5A FB 09 4A 5B 00 B1 4A 59 6F 19 4A 5A D9 19", " ", "", -1))
+	if !assert.NoError(t, err) {
+		return
+	}
+	pkt, err = parseIPPacket(withoutRST)
+	if !assert.NoError(t, err) {
+		return
+	}
+	assert.False(t, pkt.HasTCPFlag(TCPFlagRST))
 }
 
 // for some reason, the TCP checksum in the test data doesn't match what's calculated by RFC 793,
