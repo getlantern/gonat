@@ -273,8 +273,13 @@ func (s *server) dispatch() {
 					connsByFT[ft] = c
 					s.addConn(pkt.IPProto)
 				}
-				s.acceptedPacket()
-				c.toUpstream <- pkt
+				select {
+				case c.toUpstream <- pkt:
+					s.acceptedPacket()
+				default:
+					// don't block if we're stalled writing upstream
+					s.rejectedPacket()
+				}
 			default:
 				s.rejectedPacket()
 				s.bufferPool.Put(pkt.Raw)
