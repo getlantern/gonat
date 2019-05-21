@@ -10,9 +10,6 @@ import (
 )
 
 const (
-	// DefaultMTU is 65536 to accomodate large segments
-	DefaultMTU = 65536
-
 	// DefaultBufferPoolSize is 10 MB
 	DefaultBufferPoolSize = 10000000
 
@@ -27,6 +24,9 @@ const (
 
 	// MinConntrackTimeout sets a lower bound on how long we'll let conntrack entries persist
 	MinConntrackTimeout = 1 * time.Minute
+
+	// MaximumIPPacketSize is 65535 bytes
+	MaximumIPPacketSize = 65535
 )
 
 const (
@@ -68,10 +68,6 @@ type Opts struct {
 	// when specified.
 	IFAddr string
 
-	// MTU specifies the maximum transmission unit, which can include large segments.
-	// The default value of 65536 is usually fine.
-	MTU int
-
 	// BufferPool is a pool for buffers. If not provided, default to a 10MB pool.
 	// Each []byte in the buffer pool should be 65536 bytes.
 	BufferPool BufferPool
@@ -102,11 +98,8 @@ func (opts *Opts) ApplyDefaults() error {
 	if opts == nil {
 		opts = &Opts{}
 	}
-	if opts.MTU <= 0 {
-		opts.MTU = DefaultMTU
-	}
 	if opts.BufferPool == nil {
-		opts.BufferPool = NewBufferPool(DefaultBufferPoolSize, opts.MTU)
+		opts.BufferPool = NewBufferPool(DefaultBufferPoolSize)
 	}
 	if opts.BufferDepth <= 0 {
 		opts.BufferDepth = DefaultBufferDepth
@@ -169,9 +162,9 @@ func findDefaultIPv4Addr() (string, error) {
 }
 
 // NewBufferPool creates a buffer pool with the given sizeInBytes containing slices
-// sized to accomodate our MTU.
-func NewBufferPool(sizeInBytes int, mtu int) BufferPool {
-	return bpool.NewBytePool(sizeInBytes, mtu)
+// sized to accomodate our MaximumIPPacketSize.
+func NewBufferPool(sizeInBytes int) BufferPool {
+	return bpool.NewBytePool(sizeInBytes, MaximumIPPacketSize)
 }
 
 // BufferPool is a bool of byte slices

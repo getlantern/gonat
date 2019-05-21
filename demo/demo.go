@@ -24,6 +24,7 @@ var (
 	tunAddr   = flag.String("tun-address", "10.0.0.2", "tun device address")
 	tunMask   = flag.String("tun-mask", "255.255.255.0", "tun device netmask")
 	tunGW     = flag.String("tun-gw", "10.0.0.1", "tun device gateway")
+	mtu       = flag.Int("mtu", 1500, "maximum transmission unit for TUN device")
 	ifOut     = flag.String("ifout", "", "name of interface to use for outbound connections")
 	tcpDest   = flag.String("tcpdest", "80.249.99.148", "destination to which to connect all TCP traffic")
 	udpDest   = flag.String("udpdest", "8.8.8.8", "destination to which to connect all UDP traffic")
@@ -55,7 +56,7 @@ func main() {
 		}()
 	}
 
-	dev, err := tun.OpenTunDevice(*tunDevice, *tunAddr, *tunGW, *tunMask)
+	dev, err := tun.OpenTunDevice(*tunDevice, *tunAddr, *tunGW, *tunMask, *mtu)
 	if err != nil {
 		log.Fatal(err)
 	}
