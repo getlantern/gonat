@@ -411,11 +411,16 @@ func (c *conn) readFromUpstream() {
 			c.s.rejectedPacket()
 			c.s.bufferPool.Put(b)
 		} else {
-			pkt.SetDest(c.ft.Src.IP, c.ft.Src.Port)
-			c.s.opts.OnInbound(pkt, c.ft)
-			pkt.recalcChecksum()
-			c.s.acceptedPacket()
-			c.s.toDownstream <- pkt
+			ft := pkt.FT()
+			if ft.Dst.Port != c.port {
+				log.Debugf("Got packet for wrong port!: %v", ft)
+			} else {
+				pkt.SetDest(c.ft.Src.IP, c.ft.Src.Port)
+				c.s.opts.OnInbound(pkt, c.ft)
+				pkt.recalcChecksum()
+				c.s.acceptedPacket()
+				c.s.toDownstream <- pkt
+			}
 		}
 	}
 }
