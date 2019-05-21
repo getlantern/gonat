@@ -258,14 +258,14 @@ func (s *server) dispatch() {
 				if c == nil {
 					port, err := assignPort(pkt, ft)
 					if err != nil {
-						log.Errorf("Unable to assign port, dropping packet: %v", err)
+						log.Errorf("Unable to assign port, dropping packet %v: %v", ft, err)
 						s.rejectedPacket()
 						s.bufferPool.Put(pkt.Raw)
 						continue
 					}
 					c, err = s.newConn(pkt.IPProto, ft, port)
 					if err != nil {
-						log.Errorf("Unable to create connection, dropping packet: %v", err)
+						log.Errorf("Unable to create connection, dropping packet %v: %v", ft, err)
 						s.rejectedPacket()
 						s.bufferPool.Put(pkt.Raw)
 						continue
@@ -278,12 +278,13 @@ func (s *server) dispatch() {
 					s.acceptedPacket()
 				default:
 					// don't block if we're stalled writing upstream
+					log.Tracef("Stalled writing packet %v upstream", ft)
 					s.rejectedPacket()
 				}
 			default:
 				s.rejectedPacket()
 				s.bufferPool.Put(pkt.Raw)
-				log.Tracef("Unknown IP protocol, ignoring: %v", pkt.IPProto)
+				log.Tracef("Unknown IP protocol, ignoring packet %v: %v", pkt.FT(), pkt.IPProto)
 				continue
 			}
 		case c := <-s.closedConns:
@@ -406,6 +407,7 @@ func (c *conn) readFromUpstream() {
 		}
 		c.markActive()
 		if pkt, err := parseIPPacket(b[:n]); err != nil {
+			log.Tracef("Dropping unparseable packet %v from upstream: %v", c.ft, err)
 			c.s.rejectedPacket()
 			c.s.bufferPool.Put(b)
 		} else {
