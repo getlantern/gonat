@@ -183,6 +183,9 @@ func (s *server) dispatch() {
 	createConntrackEntry = func(ipProto uint8, ft FourTuple, port uint16) error {
 		args := s.conntrackArgsFor("I", ctTimeout, ipProto, ft, port)
 		cmd := exec.Command("conntrack", args...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			AmbientCaps: []uintptr{12}, // CAP_NET_ADMIN
+		}
 		err := cmd.Run()
 		if err != nil {
 			err = errors.New("Unable to add conntrack entry with args %v: %v", args, err)
