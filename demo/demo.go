@@ -62,19 +62,6 @@ func main() {
 	}
 	defer dev.Close()
 
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch,
-		syscall.SIGHUP,
-		syscall.SIGINT,
-		syscall.SIGTERM,
-		syscall.SIGQUIT)
-	go func() {
-		<-ch
-		log.Debug("Closing TUN device")
-		dev.Close()
-		log.Debug("Closed TUN device")
-	}()
-
 	s, err := gonat.NewServer(dev, &gonat.Opts{
 		IFName:      *ifOut,
 		IdleTimeout: 5 * time.Second,
@@ -90,5 +77,21 @@ func main() {
 		log.Fatal(err)
 	}
 	defer s.Close()
+
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
+	go func() {
+		<-ch
+		log.Debug("Closing gonat server")
+		s.Close()
+		log.Debug("Closing TUN device")
+		dev.Close()
+		log.Debug("Finished closing")
+	}()
+
 	log.Debugf("Final result: %v", s.Serve())
 }

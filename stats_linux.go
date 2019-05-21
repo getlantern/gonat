@@ -12,8 +12,8 @@ func (s *server) trackStats() {
 
 	for {
 		select {
-		// case <-s.closeCh:
-		// 	return
+		case <-s.close:
+			return
 		case <-ticker.C:
 			log.Debugf("TCP Conns: %v    UDP Conns: %v", s.NumTCPConns(), s.NumUDPConns())
 			log.Debugf("Accepted Packets: %d    Rejected Packets: %d", s.AcceptedPackets(), s.RejectedPackets())

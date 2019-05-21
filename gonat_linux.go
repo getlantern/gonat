@@ -14,6 +14,7 @@ import (
 
 	ct "github.com/florianl/go-conntrack"
 	"github.com/getlantern/errors"
+	"github.com/getlantern/ops"
 	"github.com/mdlayher/netlink/nlenc"
 )
 
@@ -23,6 +24,8 @@ type server struct {
 	numTCPConns     int64
 	numUDPConns     int64
 
+	tcpSocket      io.ReadWriteCloser
+	udpSocket      io.ReadWriteCloser
 	downstream     io.ReadWriter
 	opts           *Opts
 	bufferPool     BufferPool
@@ -57,19 +60,21 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 }
 
 func (s *server) Serve() error {
-	tcpSocket, err := s.createSocket(syscall.IPPROTO_TCP, FourTuple{}, 0)
+	var err error
+	s.tcpSocket, err = s.createSocket(syscall.IPPROTO_TCP, FourTuple{}, 0)
 	if err != nil {
 		return err
 	}
-	udpSocket, err := s.createSocket(syscall.IPPROTO_UDP, FourTuple{}, 0)
+	s.udpSocket, err = s.createSocket(syscall.IPPROTO_UDP, FourTuple{}, 0)
 	if err != nil {
 		return err
 	}
-	go s.readFromUpstream(tcpSocket)
-	go s.readFromUpstream(udpSocket)
-	go s.trackStats()
-	go s.dispatch()
-	go s.writeToDownstream()
+	ops.Go(func() { s.readFromUpstream(s.tcpSocket) })
+	ops.Go(func() { s.readFromUpstream(s.udpSocket) })
+
+	ops.Go(s.trackStats)
+	ops.Go(s.dispatch)
+	ops.Go(s.writeToDownstream)
 	return s.readFromDownstream()
 }
 
@@ -246,11 +251,11 @@ func (s *server) dispatch() {
 		}
 		if len(connsToClose) > 0 {
 			// close conns on a goroutine to avoid tying up main dispatch loop
-			go func() {
+			ops.Go(func() {
 				for _, c := range connsToClose {
 					c.Close()
 				}
-			}()
+			})
 		}
 	}
 
@@ -339,6 +344,8 @@ func (s *server) dispatch() {
 					}
 				}
 			}
+			s.tcpSocket.Close()
+			s.udpSocket.Close()
 			return
 		}
 	}
@@ -361,7 +368,7 @@ func (s *server) newConn(ipProto uint8, ft FourTuple, port uint16) (*conn, error
 		s:               s,
 		close:           make(chan interface{}),
 	}
-	go c.writeToUpstream()
+	ops.Go(c.writeToUpstream)
 	return c, nil
 }
 
@@ -513,5 +520,12 @@ func (s *server) readFromUpstream(socket io.ReadWriteCloser) {
 }
 
 func (s *server) Close() error {
-	return nil
+	select {
+	case <-s.close:
+		// already closed
+		return nil
+	default:
+		close(s.close)
+		return nil
+	}
 }
