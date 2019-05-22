@@ -1,3 +1,6 @@
+gonat [![Travis CI Status](https://travis-ci.org/getlantern/gonat.svg?branch=master)](https://travis-ci.org/getlantern/gonat)&nbsp;[![Coverage Status](https://coveralls.io/repos/getlantern/gonat/badge.png)](https://coveralls.io/r/getlantern/gonat)&nbsp;[![GoDoc](https://godoc.org/github.com/getlantern/gonat?status.png)](http://godoc.org/github.com/getlantern/gonat)&nbsp;[![Sourcegraph](https://sourcegraph.com/github.com/getlantern/gonat/-/badge.svg)](https://sourcegraph.com/github.com/getlantern/gonat?badge)
+==========
+
 This library only works on Linux.
 
 Dependencies are managed using Go modules. If using a version of Go prior to 1.13, use the environment
