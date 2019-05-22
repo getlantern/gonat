@@ -30,8 +30,9 @@ const (
 )
 
 const (
-	minEphemeralPort = 32768
-	maxEphemeralPort = 61000 // consistent with most Linux kernels
+	minEphemeralPort  = 32768
+	maxEphemeralPort  = 61000 // consistent with most Linux kernels
+	numEphemeralPorts = maxEphemeralPort - minEphemeralPort
 )
 
 var (
