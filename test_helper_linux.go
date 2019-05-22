@@ -21,7 +21,7 @@ var (
 
 // Note - this test has to be run with root permissions to allow setting up the
 // TUN device.
-func RunTest(t *testing.T, tunGW string, doTest func(dev io.ReadWriter, origEchoAddr Addr, finishedCh chan interface{}) func() error) {
+func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu int, doTest func(dev io.ReadWriter, origEchoAddr Addr, finishedCh chan interface{}) (func() error, error)) {
 	_, tcpConnCount, err := fdcount.Matching("TCP")
 	if !assert.NoError(t, err, "unable to get initial TCP socket count") {
 		return
@@ -47,10 +47,10 @@ func RunTest(t *testing.T, tunGW string, doTest func(dev io.ReadWriter, origEcho
 	host, _port, _ := net.SplitHostPort(echoAddr)
 	port, _ := strconv.Atoi(_port)
 	origEchoAddr := Addr{host, uint16(port)}
-	echoAddr = "10.0.0.9:" + _port
+	echoAddr = tunGW + ":" + _port
 
 	// Open a TUN device
-	dev, err := tun.OpenTunDevice("tun0", "10.0.0.10", tunGW, "255.255.255.0", 1500)
+	dev, err := tun.OpenTunDevice(tunDeviceName, tunAddr, tunGW, tunMask, mtu)
 	if err != nil {
 		if err != nil {
 			if strings.HasSuffix(err.Error(), "operation not permitted") {
@@ -61,8 +61,8 @@ func RunTest(t *testing.T, tunGW string, doTest func(dev io.ReadWriter, origEcho
 	}
 
 	finishedCh := make(chan interface{})
-	beforeClose := doTest(dev, origEchoAddr, finishedCh)
-	if beforeClose == nil {
+	beforeClose, err := doTest(dev, origEchoAddr, finishedCh)
+	if !assert.NoError(t, err) {
 		return
 	}
 
