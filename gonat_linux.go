@@ -1,12 +1,9 @@
 package gonat
 
 import (
-	"fmt"
 	"io"
 	"math/rand"
 	"net"
-	"os"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -222,56 +219,6 @@ func (s *server) dropPacket(pkt *IPPacket) {
 	s.bufferPool.Put(pkt.Raw)
 }
 
-// Since we're using unconnected raw sockets, the kernel doesn't create ip_conntrack
-// entries for us. When we receive a SYNACK packet from the upstream end in response
-// to the SYN packet that we forward from the client, the kernel automatically sends
-// an RST packet because it doesn't see a connection in the right state. We can't
-// actually fake a connection in the right state, however we can manually create an entry
-// in ip_conntrack which allows us to use a single iptables rule to safely drop
-// all outbound RST packets for tracked tcp connections. The rule can be added like so:
-//
-//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
-//
-func (s *server) createConntrackEntry(ipProto uint8, ft FourTuple, port uint16) error {
-	flow := s.ctFlowFor(true, ipProto, ft, port)
-	log.Debugf("Creating conntrack entry for %v port %d", ft, port)
-	return s.ctrack.Create(flow)
-}
-
-func (s *server) deleteConntrackEntry(ipProto uint8, ft FourTuple, port uint16) {
-	flow := s.ctFlowFor(false, ipProto, ft, port)
-	if err := s.ctrack.Delete(flow); err != nil {
-		log.Errorf("Unable to delete conntrack entry for %v: %v", flow, err)
-	}
-}
-
-func (s *server) ctFlowFor(create bool, ipProto uint8, ft FourTuple, port uint16) ct.Flow {
-	srcIP := net.ParseIP(s.opts.IFAddr).To4()
-	dstIP := net.ParseIP(ft.Dst.IP).To4()
-	srcPort := port
-	dstPort := ft.Dst.Port
-
-	var ctTimeout uint32
-	var status ct.StatusFlag
-	if create {
-		status = ct.StatusConfirmed | ct.StatusAssured
-		ctTimeout = s.ctTimeout
-	}
-
-	flow := ct.NewFlow(
-		ipProto, status,
-		srcIP, dstIP,
-		srcPort, dstPort,
-		ctTimeout, 0)
-	if create && ipProto == syscall.IPPROTO_TCP {
-		flow.ProtoInfo.TCP = &ct.ProtoInfoTCP{
-			State: 3, // ESTABLISHED
-		}
-	}
-
-	return flow
-}
-
 // assignPort assigns an ephemeral local port for a new connection. If an existing connection
 // with the resulting 4-tuple is already tracked because a different application created it,
 // this will fail on createConntrackEntry and then retry until it finds an untracked ephemeral
@@ -320,116 +267,6 @@ func (s *server) deleteConn(c *conn) {
 	delete(s.conns[c.ipProto], c.ft)
 	delete(s.ports[c.ipProto], c.port)
 	s.deleteConntrackEntry(c.ipProto, c.ft, c.port)
-}
-
-// newConn creates a connection built around a raw socket for either TCP or UDP
-// (depending no the specified proto). Being a raw socket, it allows us to send our
-// own IP packets.
-func (s *server) newConn(ipProto uint8, ft FourTuple, port uint16) (*conn, error) {
-	socket, err := s.createSocket(ipProto, ft, port)
-	if err != nil {
-		return nil, err
-	}
-	c := &conn{
-		ReadWriteCloser: socket,
-		ipProto:         ipProto,
-		ft:              ft,
-		port:            port,
-		toUpstream:      make(chan *IPPacket, s.opts.BufferDepth),
-		s:               s,
-		close:           make(chan interface{}),
-	}
-	ops.Go(c.writeToUpstream)
-	return c, nil
-}
-
-func (s *server) createSocket(ipProto uint8, ft FourTuple, port uint16) (io.ReadWriteCloser, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, int(ipProto))
-	if err != nil {
-		return nil, errors.New("Unable to create transport: %v", err)
-	}
-	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_HDRINCL, 1); err != nil {
-		syscall.Close(fd)
-		return nil, errors.New("Unable to set IP_HDRINCL: %v", err)
-	}
-	bindAddr := sockAddrFor(s.opts.IFAddr, port)
-	if err := syscall.Bind(fd, bindAddr); err != nil {
-		syscall.Close(fd)
-		return nil, errors.New("Unable to bind raw socket: %v", err)
-	}
-	if ft.Dst.Port > 0 {
-		connectAddr := sockAddrFor(ft.Dst.IP, ft.Dst.Port)
-		if err := syscall.Connect(fd, connectAddr); err != nil {
-			syscall.Close(fd)
-			return nil, errors.New("Unable to connect raw socket: %v", err)
-		}
-	}
-	if err := syscall.SetNonblock(fd, true); err != nil {
-		syscall.Close(fd)
-		return nil, errors.New("Unable to set raw socket to non-blocking: %v", err)
-	}
-	return os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd)), nil
-}
-
-func sockAddrFor(ip string, port uint16) syscall.Sockaddr {
-	var addr [4]byte
-	copy(addr[:], net.ParseIP(ip).To4())
-	return &syscall.SockaddrInet4{
-		Addr: addr,
-		Port: int(port),
-	}
-}
-
-type conn struct {
-	io.ReadWriteCloser
-	ipProto    uint8
-	ft         FourTuple
-	port       uint16
-	toUpstream chan *IPPacket
-	s          *server
-	lastActive int64
-	close      chan interface{}
-}
-
-func (c *conn) writeToUpstream() {
-	defer func() {
-		c.s.closedConns <- c
-	}()
-	defer c.ReadWriteCloser.Close()
-
-	for {
-		select {
-		case pkt := <-c.toUpstream:
-			pkt.SetSource(c.s.opts.IFAddr, c.port)
-			pkt.recalcChecksum()
-			_, err := c.Write(pkt.Raw)
-			if err != nil {
-				log.Errorf("Error writing upstream: %v", err)
-				return
-			}
-			c.markActive()
-		case <-c.close:
-			return
-		}
-	}
-}
-
-func (c *conn) markActive() {
-	atomic.StoreInt64(&c.lastActive, time.Now().UnixNano())
-}
-
-func (c *conn) timeSinceLastActive() time.Duration {
-	return time.Duration(time.Now().UnixNano() - atomic.LoadInt64(&c.lastActive))
-}
-
-func (c *conn) Close() error {
-	select {
-	case <-c.close:
-		return nil
-	default:
-		close(c.close)
-		return nil
-	}
 }
 
 // readFromDownstream reads all IP packets from downstream clients.
