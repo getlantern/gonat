@@ -92,11 +92,12 @@ func (s *server) Serve() error {
 	if err != nil {
 		return err
 	}
+	ops.Go(func() { s.readFromUpstream(s.tcpSocket) })
+
 	s.udpSocket, err = s.createSocket(FiveTuple{IPProto: syscall.IPPROTO_UDP})
 	if err != nil {
 		return err
 	}
-	ops.Go(func() { s.readFromUpstream(s.tcpSocket) })
 	ops.Go(func() { s.readFromUpstream(s.udpSocket) })
 
 	ops.Go(s.trackStats)
@@ -265,6 +266,8 @@ func (s *server) deleteConn(c *conn) {
 
 // readFromDownstream reads all IP packets from downstream clients.
 func (s *server) readFromDownstream() error {
+	defer s.Close()
+
 	for {
 		b := s.bufferPool.Get()
 		n, err := s.downstream.Read(b)

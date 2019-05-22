@@ -33,6 +33,6 @@ func TestEndToEnd(t *testing.T) {
 			assert.Equal(t, io.EOF, server.Serve())
 			close(finishedCh)
 		}()
-		return server.Close, nil
+		return func() error { return nil }, nil
 	})
 }
