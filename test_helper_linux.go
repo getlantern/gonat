@@ -21,7 +21,7 @@ var (
 
 // Note - this test has to be run with root permissions to allow setting up the
 // TUN device.
-func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu int, doTest func(dev io.ReadWriter, origEchoAddr Addr, finishedCh chan interface{}) (func() error, error)) {
+func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu int, doTest func(ifAddr string, dev io.ReadWriter, origEchoAddr Addr, finishedCh chan interface{}) (func() error, error)) {
 	_, tcpConnCount, err := fdcount.Matching("TCP")
 	if !assert.NoError(t, err, "unable to get initial TCP socket count") {
 		return
@@ -61,7 +61,7 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 	}
 
 	finishedCh := make(chan interface{})
-	beforeClose, err := doTest(dev, origEchoAddr, finishedCh)
+	beforeClose, err := doTest(opts.IFAddr, dev, origEchoAddr, finishedCh)
 	if !assert.NoError(t, err) {
 		return
 	}

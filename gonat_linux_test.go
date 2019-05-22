@@ -16,7 +16,7 @@ const (
 // Note - this test has to be run with root permissions to allow setting up the
 // TUN device.
 func TestEndToEnd(t *testing.T) {
-	RunTest(t, "tun0", "10.0.0.10", tunGW, "255.255.255.0", 1500, func(dev io.ReadWriter, origEchoAddr Addr, finishedCh chan interface{}) (func() error, error) {
+	RunTest(t, "tun0", "10.0.0.10", tunGW, "255.255.255.0", 1500, func(ifAddr string, dev io.ReadWriter, origEchoAddr Addr, finishedCh chan interface{}) (func() error, error) {
 		server, err := NewServer(dev, &Opts{
 			OnOutbound: func(pkt *IPPacket) {
 				pkt.SetDest(origEchoAddr)
