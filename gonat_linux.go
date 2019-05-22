@@ -6,16 +6,13 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"os/exec"
-	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	ct "github.com/florianl/go-conntrack"
 	"github.com/getlantern/errors"
 	"github.com/getlantern/ops"
-	"github.com/mdlayher/netlink/nlenc"
+	ct "github.com/ti-mo/conntrack"
 )
 
 type server struct {
@@ -78,41 +75,31 @@ func (s *server) Serve() error {
 	return s.readFromDownstream()
 }
 
-func ctAttr(t ct.ConnAttrType, d []byte) ct.ConnAttr {
-	return ct.ConnAttr{Type: t, Data: d}
-}
+func (s *server) ctFlowFor(create bool, ctTimeout uint32, ipProto uint8, ft FourTuple, port uint16) ct.Flow {
+	srcIP := net.ParseIP(s.opts.IFAddr).To4()
+	dstIP := net.ParseIP(ft.Dst.IP).To4()
+	srcPort := port
+	dstPort := ft.Dst.Port
 
-func (s *server) conntrackArgsFor(op string, ctTimeout time.Duration, ipProto uint8, ft FourTuple, port uint16) []string {
-	srcIP := s.opts.IFAddr
-	dstIP := ft.Dst.IP
-	srcPort := strconv.Itoa(int(port))
-	dstPort := strconv.Itoa(int(ft.Dst.Port))
-
-	proto := ""
-	switch ipProto {
-	case syscall.IPPROTO_TCP:
-		proto = "TCP"
-	case syscall.IPPROTO_UDP:
-		proto = "UDP"
+	var status ct.StatusFlag
+	if create {
+		status = ct.StatusConfirmed | ct.StatusAssured
+	} else {
+		ctTimeout = 0
 	}
 
-	args := []string{"-" + op}
-	if op == "I" {
-		args = append(args, "-u", "ASSURED", "--timeout", strconv.Itoa(int(ctTimeout.Seconds())))
-	}
-	args = append(args,
-		"-p", proto,
-		"-s", srcIP, "-d", dstIP,
-		"-r", dstIP, "-q", srcIP,
-		"--sport", srcPort, "--dport", dstPort,
-		"--reply-port-src", dstPort, "--reply-port-dst", srcPort,
-	)
-
-	if op == "I" && ipProto == syscall.IPPROTO_TCP {
-		args = append(args, "--state", "ESTABLISHED")
+	flow := ct.NewFlow(
+		ipProto, status,
+		srcIP, dstIP,
+		srcPort, dstPort,
+		ctTimeout, 0)
+	if create && ipProto == syscall.IPPROTO_TCP {
+		flow.ProtoInfo.TCP = &ct.ProtoInfoTCP{
+			State: 3, // ESTABLISHED
+		}
 	}
 
-	return args
+	return flow
 }
 
 func (s *server) dispatch() {
@@ -128,17 +115,17 @@ func (s *server) dispatch() {
 		syscall.IPPROTO_UDP: make(map[uint16]*conn),
 	}
 
-	ctrack, err := ct.Open(&ct.Config{})
+	ctrack, err := ct.Dial(nil)
 	if err != nil {
-		log.Errorf("Unable to create conntrack connection: %v", err)
-		return
+		log.Fatal(err)
 	}
 	defer ctrack.Close()
 
-	ctTimeout := s.opts.IdleTimeout * 2
-	if ctTimeout < MinConntrackTimeout {
-		ctTimeout = MinConntrackTimeout
+	_ctTimeout := s.opts.IdleTimeout * 2
+	if _ctTimeout < MinConntrackTimeout {
+		_ctTimeout = MinConntrackTimeout
 	}
+	ctTimeout := uint32(_ctTimeout.Seconds())
 
 	// Since we're using unconnected raw sockets, the kernel doesn't create ip_conntrack
 	// entries for us. When we receive a SYNACK packet from the upstream end in response
@@ -151,53 +138,15 @@ func (s *server) dispatch() {
 	//   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
 	//
 	createConntrackEntry := func(ipProto uint8, ft FourTuple, port uint16) error {
-		srcIP := net.ParseIP(s.opts.IFAddr).To4()
-		dstIP := net.ParseIP(ft.Dst.IP).To4()
-		srcPort := nlenc.Uint16Bytes(port)
-		dstPort := nlenc.Uint16Bytes(ft.Dst.Port)
-
-		attrs := []ct.ConnAttr{
-			ctAttr(ct.AttrOrigIPv4Src, srcIP),
-			ctAttr(ct.AttrOrigIPv4Dst, dstIP),
-			ctAttr(ct.AttrReplIPv4Src, dstIP),
-			ctAttr(ct.AttrReplIPv4Dst, srcIP),
-			ctAttr(ct.AttrOrigL4Proto, nlenc.Uint8Bytes(ipProto)),
-			ctAttr(ct.AttrReplL4Proto, nlenc.Uint8Bytes(ipProto)),
-			ctAttr(ct.AttrOrigPortSrc, srcPort),
-			ctAttr(ct.AttrOrigPortDst, dstPort),
-			ctAttr(ct.AttrReplPortSrc, dstPort),
-			ctAttr(ct.AttrReplPortDst, srcPort),
-			ctAttr(ct.AttrStatus, nlenc.Uint32Bytes(2382430208)),
-			ctAttr(ct.AttrTimeout, nlenc.Uint32Bytes(uint32(ctTimeout.Seconds()))),
-		}
-
-		if ipProto == syscall.IPPROTO_TCP {
-			attrs = append(attrs, ctAttr(ct.AttrTCPState, nlenc.Uint8Bytes(3))) // ESTABLISHED
-		}
-
-		log.Debugf("Creating conntrack entry for %d %v:%v -> %v:%v", ipProto, srcIP, nlenc.Uint16(srcPort), dstIP, nlenc.Uint16(dstPort))
-		return ctrack.Create(ct.Ct, ct.CtIPv4, attrs)
-	}
-
-	// For now, we use the conntrack command since the library doesn't seem to work for TCP
-	createConntrackEntry = func(ipProto uint8, ft FourTuple, port uint16) error {
-		args := s.conntrackArgsFor("I", ctTimeout, ipProto, ft, port)
-		cmd := exec.Command("conntrack", args...)
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			AmbientCaps: []uintptr{12}, // CAP_NET_ADMIN
-		}
-		err := cmd.Run()
-		if err != nil {
-			err = errors.New("Unable to add conntrack entry with args %v: %v", args, err)
-		}
-		return err
+		flow := s.ctFlowFor(true, ctTimeout, ipProto, ft, port)
+		log.Debugf("Creating conntrack entry for %v port %d", ft, port)
+		return ctrack.Create(flow)
 	}
 
 	deleteConntrackEntry := func(ipProto uint8, ft FourTuple, port uint16) {
-		args := s.conntrackArgsFor("D", ctTimeout, ipProto, ft, port)
-		cmd := exec.Command("conntrack", args...)
-		if err := cmd.Run(); err != nil {
-			log.Errorf("Unable to delete conntrack entry with args %v: %v", args, err)
+		flow := s.ctFlowFor(false, ctTimeout, ipProto, ft, port)
+		if err := ctrack.Delete(flow); err != nil {
+			log.Errorf("Unable to delete conntrack entry for %v: %v", flow, err)
 		}
 	}
 

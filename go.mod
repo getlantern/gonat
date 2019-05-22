@@ -12,4 +12,5 @@ require (
 	github.com/mdlayher/netlink v0.0.0-20190514163018-336c8d74f4a0
 	github.com/oxtoacart/bpool v0.0.0-20190227141107-8c4636f812cc
 	github.com/stretchr/testify v1.3.0
+	github.com/ti-mo/conntrack v0.0.0-20190323132511-733fb77b6071
 )
