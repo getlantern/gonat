@@ -5,6 +5,7 @@ go 1.12
 require (
 	github.com/florianl/go-conntrack v0.0.0-20190502110113-6d50e184fe3e
 	github.com/getlantern/errors v0.0.0-20190325191628-abdb3e3e36f7
+	github.com/getlantern/fdcount v0.0.0-20170105153814-6a6cb5839bc5
 	github.com/getlantern/golog v0.0.0-20170508214112-cca714f7feb5
 	github.com/getlantern/gotun v0.0.0-20190521133812-51bfa687e26b
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f

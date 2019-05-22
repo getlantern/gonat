@@ -1,5 +1,8 @@
 This library only works on Linux.
 
+Dependencies are managed using Go modules. If using a version of Go prior to 1.13, use the environment
+variable `GO111MODULE=on` to enable use of modules.
+
 In order to work, this library needs to be able to open raw sockets and update the conntrack table
 via netlink. You can give the binary the correct capabilities with:
 
@@ -16,4 +19,10 @@ The above requires the nf_conntrack module to be installed.
 ```
 modprobe nf_conntrack
 modprobe nf_conntrack_ipv4
+```
+
+To run the unit tests, you need to have root permissions. It's also useful to enable tracing while running the tests.
+
+```
+GO111MODULE=on go test -c && TRACE=true sudo -E ./gonat.test
 ```

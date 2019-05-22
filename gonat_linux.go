@@ -168,6 +168,7 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 		}
 		select {
 		case c.toUpstream <- pkt:
+			log.Tracef("Transmit --  %v -> %v", c.downFT, c.upFT)
 			s.acceptedPacket()
 		default:
 			// don't block if we're stalled writing upstream
@@ -194,6 +195,7 @@ func (s *server) onPacketFromUpstream(pkt *IPPacket) {
 	pkt.recalcChecksum()
 	c.s.acceptedPacket()
 	c.markActive()
+	log.Tracef("Transmit -- %v <- %v", c.downFT, c.upFT)
 	c.s.toDownstream <- pkt
 }
 
