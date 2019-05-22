@@ -1,7 +1,6 @@
 package gonat
 
 import (
-	"net"
 	"syscall"
 
 	ct "github.com/ti-mo/conntrack"
@@ -17,25 +16,20 @@ import (
 //
 //   iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
 //
-func (s *server) createConntrackEntry(ipProto uint8, ft FourTuple, port uint16) error {
-	flow := s.ctFlowFor(true, ipProto, ft, port)
-	log.Debugf("Creating conntrack entry for %v port %d", ft, port)
+func (s *server) createConntrackEntry(upFT FiveTuple) error {
+	flow := s.ctFlowFor(true, upFT)
+	log.Tracef("Creating conntrack entry for %v", upFT)
 	return s.ctrack.Create(flow)
 }
 
-func (s *server) deleteConntrackEntry(ipProto uint8, ft FourTuple, port uint16) {
-	flow := s.ctFlowFor(false, ipProto, ft, port)
+func (s *server) deleteConntrackEntry(upFT FiveTuple) {
+	flow := s.ctFlowFor(false, upFT)
 	if err := s.ctrack.Delete(flow); err != nil {
-		log.Errorf("Unable to delete conntrack entry for %v: %v", flow, err)
+		log.Errorf("Unable to delete conntrack entry for %v: %v", upFT, err)
 	}
 }
 
-func (s *server) ctFlowFor(create bool, ipProto uint8, ft FourTuple, port uint16) ct.Flow {
-	srcIP := net.ParseIP(s.opts.IFAddr).To4()
-	dstIP := net.ParseIP(ft.Dst.IP).To4()
-	srcPort := port
-	dstPort := ft.Dst.Port
-
+func (s *server) ctFlowFor(create bool, upFT FiveTuple) ct.Flow {
 	var ctTimeout uint32
 	var status ct.StatusFlag
 	if create {
@@ -48,11 +42,11 @@ func (s *server) ctFlowFor(create bool, ipProto uint8, ft FourTuple, port uint16
 	}
 
 	flow := ct.NewFlow(
-		ipProto, status,
-		srcIP, dstIP,
-		srcPort, dstPort,
+		upFT.IPProto, status,
+		upFT.Src.IP(), upFT.Dst.IP(),
+		upFT.Src.Port, upFT.Dst.Port,
 		ctTimeout, 0)
-	if create && ipProto == syscall.IPPROTO_TCP {
+	if create && upFT.IPProto == syscall.IPPROTO_TCP {
 		flow.ProtoInfo.TCP = &ct.ProtoInfoTCP{
 			State: 3, // ESTABLISHED
 		}

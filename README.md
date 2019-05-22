@@ -11,10 +11,9 @@ The library manually adds these to conntrack since we're using raw sockets.
 
 `sudo iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP`
 
-The above requires the nf_conntrack module to be installed, along with the conntrack command.
+The above requires the nf_conntrack module to be installed.
 
 ```
 modprobe nf_conntrack
 modprobe nf_conntrack_ipv4
-apt-get install conntrack
 ```

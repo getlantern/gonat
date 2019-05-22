@@ -88,9 +88,9 @@ type Opts struct {
 	// OnOutbound allows modifying outbound ip packets.
 	OnOutbound func(pkt *IPPacket)
 
-	// OnInbound allows modifying inbound ip packets. ft is the fourtuple to
+	// OnInbound allows modifying inbound ip packets. ft is the 5 tuple to
 	// which the current connection/UDP port mapping is keyed.
-	OnInbound func(pkt *IPPacket, ft FourTuple)
+	OnInbound func(pkt *IPPacket, downFT FiveTuple)
 }
 
 // ApplyDefaults applies the default values to the given Opts, including making
@@ -115,7 +115,7 @@ func (opts *Opts) ApplyDefaults() error {
 		opts.OnOutbound = func(pkt *IPPacket) {}
 	}
 	if opts.OnInbound == nil {
-		opts.OnInbound = func(pkt *IPPacket, ft FourTuple) {}
+		opts.OnInbound = func(pkt *IPPacket, downFT FiveTuple) {}
 	}
 	if opts.IFAddr == "" {
 		var err error

@@ -70,16 +70,18 @@ func (pkt *IPPacket) HasTCPFlag(flag uint8) bool {
 	return pkt.IPProto == syscall.IPPROTO_TCP && pkt.Payload[13]&flag != 0
 }
 
-func (pkt *IPPacket) SetSource(host string, port uint16) {
-	copy(pkt.Header[12:16], net.ParseIP(host).To4())
-	networkByteOrder.PutUint16(pkt.Payload[0:2], port)
-	pkt.SrcAddr = &net.IPAddr{IP: net.IP(pkt.Header[12:16])}
+func (pkt *IPPacket) SetSource(addr Addr) {
+	ip := addr.IP()
+	copy(pkt.Header[12:16], ip)
+	networkByteOrder.PutUint16(pkt.Payload[0:2], addr.Port)
+	pkt.SrcAddr = &net.IPAddr{IP: ip}
 }
 
-func (pkt *IPPacket) SetDest(host string, port uint16) {
-	copy(pkt.Header[16:20], net.ParseIP(host).To4())
-	networkByteOrder.PutUint16(pkt.Payload[2:4], port)
-	pkt.DstAddr = &net.IPAddr{IP: net.IP(pkt.Header[16:20])}
+func (pkt *IPPacket) SetDest(addr Addr) {
+	ip := addr.IP()
+	copy(pkt.Header[16:20], ip)
+	networkByteOrder.PutUint16(pkt.Payload[2:4], addr.Port)
+	pkt.DstAddr = &net.IPAddr{IP: ip}
 }
 
 func (pkt *IPPacket) ipChecksum() uint16 {
@@ -175,27 +177,41 @@ func (pkt *IPPacket) calcIPPseudoHeaderChecksum() (csum uint32) {
 	return csum
 }
 
-func (pkt *IPPacket) FT() FourTuple {
-	return FourTuple{
-		Src: Addr{IP: pkt.SrcAddr.String(), Port: networkByteOrder.Uint16(pkt.Payload[0:2])},
-		Dst: Addr{IP: pkt.DstAddr.String(), Port: networkByteOrder.Uint16(pkt.Payload[2:4])},
+func (pkt *IPPacket) FT() FiveTuple {
+	return FiveTuple{
+		IPProto: pkt.IPProto,
+		Src:     Addr{IPString: pkt.SrcAddr.String(), Port: networkByteOrder.Uint16(pkt.Payload[0:2])},
+		Dst:     Addr{IPString: pkt.DstAddr.String(), Port: networkByteOrder.Uint16(pkt.Payload[2:4])},
 	}
 }
 
+type FiveTuple struct {
+	IPProto uint8
+	Src     Addr
+	Dst     Addr
+}
+
+func (ft FiveTuple) Reversed() FiveTuple {
+	return FiveTuple{
+		IPProto: ft.IPProto,
+		Src:     ft.Dst,
+		Dst:     ft.Src,
+	}
+}
+
+func (ft FiveTuple) String() string {
+	return fmt.Sprintf("[%d] %v -> %v", ft.IPProto, ft.Src, ft.Dst)
+}
+
 type Addr struct {
-	IP   string
-	Port uint16
+	IPString string
+	Port     uint16
 }
 
 func (a Addr) String() string {
-	return fmt.Sprintf("%v:%d", a.IP, a.Port)
+	return fmt.Sprintf("%v:%d", a.IPString, a.Port)
 }
 
-type FourTuple struct {
-	Src Addr
-	Dst Addr
-}
-
-func (ft FourTuple) String() string {
-	return fmt.Sprintf("%v -> %v", ft.Src, ft.Dst)
+func (a Addr) IP() net.IP {
+	return net.ParseIP(a.IPString).To4()
 }

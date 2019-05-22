@@ -27,8 +27,8 @@ type server struct {
 	ctTimeout          uint32
 	randomPortSequence []uint16
 	portIndexes        map[uint8]map[Addr]int
-	conns              map[uint8]map[FourTuple]*conn
-	ports              map[uint8]map[uint16]*conn
+	connsByDownFT      map[FiveTuple]*conn
+	connsByUpFT        map[FiveTuple]*conn
 	fromDownstream     chan *IPPacket
 	toDownstream       chan *IPPacket
 	fromUpstream       chan *IPPacket
@@ -67,19 +67,6 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 		randomPortSequence[i], randomPortSequence[j] = randomPortSequence[j], randomPortSequence[i]
 	})
 
-	portIndexes := map[uint8]map[Addr]int{
-		syscall.IPPROTO_TCP: make(map[Addr]int),
-		syscall.IPPROTO_UDP: make(map[Addr]int),
-	}
-	conns := map[uint8]map[FourTuple]*conn{
-		syscall.IPPROTO_TCP: make(map[FourTuple]*conn),
-		syscall.IPPROTO_UDP: make(map[FourTuple]*conn),
-	}
-	ports := map[uint8]map[uint16]*conn{
-		syscall.IPPROTO_TCP: make(map[uint16]*conn),
-		syscall.IPPROTO_UDP: make(map[uint16]*conn),
-	}
-
 	s := &server{
 		downstream:         downstream,
 		opts:               opts,
@@ -87,9 +74,9 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 		ctrack:             ctrack,
 		ctTimeout:          ctTimeout,
 		randomPortSequence: randomPortSequence,
-		portIndexes:        portIndexes,
-		conns:              conns,
-		ports:              ports,
+		portIndexes:        make(map[uint8]map[Addr]int),
+		connsByDownFT:      make(map[FiveTuple]*conn),
+		connsByUpFT:        make(map[FiveTuple]*conn),
 		fromDownstream:     make(chan *IPPacket, opts.BufferDepth),
 		toDownstream:       make(chan *IPPacket, opts.BufferDepth),
 		fromUpstream:       make(chan *IPPacket, opts.BufferDepth),
@@ -101,11 +88,11 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 
 func (s *server) Serve() error {
 	var err error
-	s.tcpSocket, err = s.createSocket(syscall.IPPROTO_TCP, FourTuple{}, 0)
+	s.tcpSocket, err = s.createSocket(FiveTuple{IPProto: syscall.IPPROTO_TCP})
 	if err != nil {
 		return err
 	}
-	s.udpSocket, err = s.createSocket(syscall.IPPROTO_UDP, FourTuple{}, 0)
+	s.udpSocket, err = s.createSocket(FiveTuple{IPProto: syscall.IPPROTO_UDP})
 	if err != nil {
 		return err
 	}
@@ -135,12 +122,10 @@ func (s *server) dispatch() {
 		case <-reapTicker.C:
 			s.reapIdleConns()
 		case <-s.close:
-			for _, connsByFT := range s.conns {
-				for _, c := range connsByFT {
-					if c.timeSinceLastActive() > s.opts.IdleTimeout {
-						c.Close()
-						s.deleteConn(c)
-					}
+			for _, c := range s.connsByDownFT {
+				if c.timeSinceLastActive() > s.opts.IdleTimeout {
+					c.Close()
+					s.deleteConn(c)
 				}
 			}
 			s.tcpSocket.Close()
@@ -154,10 +139,8 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 	switch pkt.IPProto {
 	case syscall.IPPROTO_TCP, syscall.IPPROTO_UDP:
 		s.opts.OnOutbound(pkt)
-		ft := pkt.FT()
-		connsByFT := s.conns[pkt.IPProto]
-		connsByPort := s.ports[pkt.IPProto]
-		c := connsByFT[ft]
+		downFT := pkt.FT()
+		c := s.connsByDownFT[downFT]
 
 		if pkt.HasTCPFlag(TCPFlagRST) {
 			if c != nil {
@@ -167,20 +150,20 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 		}
 
 		if c == nil {
-			port, err := s.assignPort(pkt, ft)
+			upFT, err := s.assignPort(downFT)
 			if err != nil {
-				log.Errorf("Unable to assign port, dropping packet %v: %v", ft, err)
+				log.Errorf("Unable to assign port, dropping packet %v: %v", downFT, err)
 				s.dropPacket(pkt)
 				return
 			}
-			c, err = s.newConn(pkt.IPProto, ft, port)
+			c, err = s.newConn(downFT, upFT)
 			if err != nil {
-				log.Errorf("Unable to create connection, dropping packet %v: %v", ft, err)
+				log.Errorf("Unable to create connection, dropping packet %v: %v", downFT, err)
 				s.dropPacket(pkt)
 				return
 			}
-			connsByFT[ft] = c
-			connsByPort[port] = c
+			s.connsByDownFT[downFT] = c
+			s.connsByUpFT[upFT] = c
 			s.addConn(pkt.IPProto)
 		}
 		select {
@@ -188,7 +171,7 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 			s.acceptedPacket()
 		default:
 			// don't block if we're stalled writing upstream
-			log.Tracef("Stalled writing packet %v upstream", ft)
+			log.Tracef("Stalled writing packet %v upstream", downFT)
 			s.dropPacket(pkt)
 		}
 	default:
@@ -198,16 +181,16 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 }
 
 func (s *server) onPacketFromUpstream(pkt *IPPacket) {
-	ft := pkt.FT()
-	connsByPort := s.ports[pkt.IPProto]
-	c := connsByPort[ft.Dst.Port]
+	upFT := pkt.FT().Reversed()
+	c := s.connsByUpFT[upFT]
 	if c == nil {
-		log.Tracef("Dropping packet for unknown port %v", ft)
+		log.Tracef("Dropping packet for unknown upstream FT: %v", upFT)
 		s.dropPacket(pkt)
 		return
 	}
-	pkt.SetDest(c.ft.Src.IP, c.ft.Src.Port)
-	c.s.opts.OnInbound(pkt, c.ft)
+
+	pkt.SetDest(c.downFT.Src)
+	c.s.opts.OnInbound(pkt, c.downFT)
 	pkt.recalcChecksum()
 	c.s.acceptedPacket()
 	c.markActive()
@@ -220,22 +203,31 @@ func (s *server) dropPacket(pkt *IPPacket) {
 }
 
 // assignPort assigns an ephemeral local port for a new connection. If an existing connection
-// with the resulting 4-tuple is already tracked because a different application created it,
+// with the resulting 5-tuple is already tracked because a different application created it,
 // this will fail on createConntrackEntry and then retry until it finds an untracked ephemeral
 // port or runs out of ports to try.
-func (s *server) assignPort(pkt *IPPacket, ft FourTuple) (port uint16, err error) {
-	portIndexesByOrigin := s.portIndexes[pkt.IPProto]
+func (s *server) assignPort(downFT FiveTuple) (upFT FiveTuple, err error) {
+	portIndexesByOrigin := s.portIndexes[upFT.IPProto]
+	if portIndexesByOrigin == nil {
+		portIndexesByOrigin = make(map[Addr]int)
+		s.portIndexes[upFT.IPProto] = portIndexesByOrigin
+	}
+
+	upFT.IPProto = downFT.IPProto
+	upFT.Dst = downFT.Dst
+	upFT.Src.IPString = s.opts.IFAddr
+
 	for i := 0; i < numEphemeralPorts; i++ {
-		portIndex := portIndexesByOrigin[ft.Dst] + 1
+		portIndex := portIndexesByOrigin[downFT.Dst] + 1
 		if portIndex >= numEphemeralPorts {
 			// loop back around to beginning of random sequence
 			portIndex = 0
 		}
-		portIndexesByOrigin[ft.Dst] = portIndex
-		port = s.randomPortSequence[portIndex]
-		err = s.createConntrackEntry(pkt.IPProto, ft, port)
+		portIndexesByOrigin[upFT.Dst] = portIndex
+		upFT.Src.Port = s.randomPortSequence[portIndex]
+		err = s.createConntrackEntry(upFT)
 		if err != nil {
-			// this can happen if this fourtuple is already tracked, ignore and retry
+			// this can happen if this 5-tuple is already tracked, ignore and retry
 			continue
 		}
 		return
@@ -246,11 +238,9 @@ func (s *server) assignPort(pkt *IPPacket, ft FourTuple) (port uint16, err error
 
 func (s *server) reapIdleConns() {
 	var connsToClose []*conn
-	for _, connsByFT := range s.conns {
-		for _, c := range connsByFT {
-			if c.timeSinceLastActive() > s.opts.IdleTimeout {
-				connsToClose = append(connsToClose, c)
-			}
+	for _, c := range s.connsByDownFT {
+		if c.timeSinceLastActive() > s.opts.IdleTimeout {
+			connsToClose = append(connsToClose, c)
 		}
 	}
 	if len(connsToClose) > 0 {
@@ -264,9 +254,9 @@ func (s *server) reapIdleConns() {
 }
 
 func (s *server) deleteConn(c *conn) {
-	delete(s.conns[c.ipProto], c.ft)
-	delete(s.ports[c.ipProto], c.port)
-	s.deleteConntrackEntry(c.ipProto, c.ft, c.port)
+	delete(s.connsByDownFT, c.downFT)
+	delete(s.connsByUpFT, c.upFT)
+	s.deleteConntrackEntry(c.upFT)
 }
 
 // readFromDownstream reads all IP packets from downstream clients.

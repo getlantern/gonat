@@ -3,7 +3,6 @@ package gonat
 import (
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"sync/atomic"
 	"syscall"
@@ -16,16 +15,15 @@ import (
 // newConn creates a connection built around a raw socket for either TCP or UDP
 // (depending no the specified proto). Being a raw socket, it allows us to send our
 // own IP packets.
-func (s *server) newConn(ipProto uint8, ft FourTuple, port uint16) (*conn, error) {
-	socket, err := s.createSocket(ipProto, ft, port)
+func (s *server) newConn(downFT FiveTuple, upFT FiveTuple) (*conn, error) {
+	socket, err := s.createSocket(upFT)
 	if err != nil {
 		return nil, err
 	}
 	c := &conn{
 		ReadWriteCloser: socket,
-		ipProto:         ipProto,
-		ft:              ft,
-		port:            port,
+		downFT:          downFT,
+		upFT:            upFT,
 		toUpstream:      make(chan *IPPacket, s.opts.BufferDepth),
 		s:               s,
 		close:           make(chan interface{}),
@@ -34,8 +32,8 @@ func (s *server) newConn(ipProto uint8, ft FourTuple, port uint16) (*conn, error
 	return c, nil
 }
 
-func (s *server) createSocket(ipProto uint8, ft FourTuple, port uint16) (io.ReadWriteCloser, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, int(ipProto))
+func (s *server) createSocket(upFT FiveTuple) (io.ReadWriteCloser, error) {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, int(upFT.IPProto))
 	if err != nil {
 		return nil, errors.New("Unable to create transport: %v", err)
 	}
@@ -43,13 +41,13 @@ func (s *server) createSocket(ipProto uint8, ft FourTuple, port uint16) (io.Read
 		syscall.Close(fd)
 		return nil, errors.New("Unable to set IP_HDRINCL: %v", err)
 	}
-	bindAddr := sockAddrFor(s.opts.IFAddr, port)
+	bindAddr := sockAddrFor(upFT.Src)
 	if err := syscall.Bind(fd, bindAddr); err != nil {
 		syscall.Close(fd)
 		return nil, errors.New("Unable to bind raw socket: %v", err)
 	}
-	if ft.Dst.Port > 0 {
-		connectAddr := sockAddrFor(ft.Dst.IP, ft.Dst.Port)
+	if upFT.Dst.Port > 0 {
+		connectAddr := sockAddrFor(upFT.Dst)
 		if err := syscall.Connect(fd, connectAddr); err != nil {
 			syscall.Close(fd)
 			return nil, errors.New("Unable to connect raw socket: %v", err)
@@ -62,20 +60,19 @@ func (s *server) createSocket(ipProto uint8, ft FourTuple, port uint16) (io.Read
 	return os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd)), nil
 }
 
-func sockAddrFor(ip string, port uint16) syscall.Sockaddr {
-	var addr [4]byte
-	copy(addr[:], net.ParseIP(ip).To4())
+func sockAddrFor(addr Addr) syscall.Sockaddr {
+	var ad [4]byte
+	copy(ad[:], addr.IP())
 	return &syscall.SockaddrInet4{
-		Addr: addr,
-		Port: int(port),
+		Addr: ad,
+		Port: int(addr.Port),
 	}
 }
 
 type conn struct {
 	io.ReadWriteCloser
-	ipProto    uint8
-	ft         FourTuple
-	port       uint16
+	downFT     FiveTuple
+	upFT       FiveTuple
 	toUpstream chan *IPPacket
 	s          *server
 	lastActive int64
@@ -91,7 +88,7 @@ func (c *conn) writeToUpstream() {
 	for {
 		select {
 		case pkt := <-c.toUpstream:
-			pkt.SetSource(c.s.opts.IFAddr, c.port)
+			pkt.SetSource(c.upFT.Src)
 			pkt.recalcChecksum()
 			_, err := c.Write(pkt.Raw)
 			if err != nil {
