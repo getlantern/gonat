@@ -106,7 +106,17 @@ func (s *server) Serve() error {
 }
 
 func (s *server) dispatch() {
-	defer s.ctrack.Close()
+	defer func() {
+		for _, c := range s.connsByDownFT {
+			if c.timeSinceLastActive() > s.opts.IdleTimeout {
+				c.Close()
+				s.deleteConn(c)
+			}
+		}
+		s.tcpSocket.Close()
+		s.udpSocket.Close()
+		s.ctrack.Close()
+	}()
 
 	reapTicker := time.NewTicker(1 * time.Second)
 	defer reapTicker.Stop()
@@ -122,14 +132,6 @@ func (s *server) dispatch() {
 		case <-reapTicker.C:
 			s.reapIdleConns()
 		case <-s.close:
-			for _, c := range s.connsByDownFT {
-				if c.timeSinceLastActive() > s.opts.IdleTimeout {
-					c.Close()
-					s.deleteConn(c)
-				}
-			}
-			s.tcpSocket.Close()
-			s.udpSocket.Close()
 			return
 		}
 	}
