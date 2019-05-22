@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -30,16 +29,6 @@ var (
 	udpDest   = flag.String("udpdest", "8.8.8.8", "destination to which to connect all UDP traffic")
 	pprofAddr = flag.String("pprofaddr", "", "pprof address to listen on, not activate pprof if empty")
 )
-
-type fivetuple struct {
-	proto            string
-	srcIP, dstIP     string
-	srcPort, dstPort int
-}
-
-func (ft fivetuple) String() string {
-	return fmt.Sprintf("[%v] %v:%v -> %v:%v", ft.proto, ft.srcIP, ft.srcPort, ft.dstIP, ft.dstPort)
-}
 
 func main() {
 	flag.Parse()
@@ -91,6 +80,7 @@ func main() {
 		log.Debug("Closing TUN device")
 		dev.Close()
 		log.Debug("Finished closing")
+		os.Exit(0)
 	}()
 
 	log.Debugf("Final result: %v", s.Serve())

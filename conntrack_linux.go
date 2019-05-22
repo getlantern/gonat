@@ -39,6 +39,10 @@ func (s *server) ctFlowFor(create bool, ipProto uint8, ft FourTuple, port uint16
 	var ctTimeout uint32
 	var status ct.StatusFlag
 	if create {
+		// we set the status to ASSURED so that the kernel doesn't destroy the conntrack entry
+		// prior to its expiration. It would do this because the connection doesn't look right and
+		// very quickly transitions into a CLOSED state, at which point it would be eligible for
+		// destruction even before its timeout.
 		status = ct.StatusConfirmed | ct.StatusAssured
 		ctTimeout = s.ctTimeout
 	}
