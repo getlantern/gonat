@@ -109,11 +109,10 @@ func (s *server) Serve() error {
 func (s *server) dispatch() {
 	defer func() {
 		for _, c := range s.connsByDownFT {
-			if c.timeSinceLastActive() > s.opts.IdleTimeout {
-				c.Close()
-				s.deleteConn(c)
-			}
+			c.Close()
+			s.deleteConn(c)
 		}
+		close(s.toDownstream)
 		s.tcpSocket.Close()
 		s.udpSocket.Close()
 		s.ctrack.Close()

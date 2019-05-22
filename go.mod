@@ -8,6 +8,7 @@ require (
 	github.com/getlantern/fdcount v0.0.0-20170105153814-6a6cb5839bc5
 	github.com/getlantern/golog v0.0.0-20170508214112-cca714f7feb5
 	github.com/getlantern/gotun v0.0.0-20190521133812-51bfa687e26b
+	github.com/getlantern/grtrack v0.0.0-20160824195228-cbf67d3fa0fd
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f
 	github.com/google/gopacket v1.1.17
 	github.com/mdlayher/netlink v0.0.0-20190514163018-336c8d74f4a0

@@ -11,6 +11,7 @@ import (
 
 	"github.com/getlantern/fdcount"
 	tun "github.com/getlantern/gotun"
+	"github.com/getlantern/grtrack"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -34,6 +35,7 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 	if !assert.NoError(t, err, "unable to get initial raw socket count") {
 		return
 	}
+	grtracker := grtrack.Start()
 
 	opts := &Opts{}
 	if err := opts.ApplyDefaults(); !assert.NoError(t, err) {
@@ -113,6 +115,8 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 		tcpConnCount.AssertDelta(0)
 		udpConnCount.AssertDelta(0)
 		rawConnCount.AssertDelta(0)
+		time.Sleep(2 * time.Second)
+		grtracker.Check(t)
 	case <-time.After(15 * time.Second):
 		t.Error("gonat failed to terminate in a reasonable amount of time")
 	}
