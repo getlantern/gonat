@@ -4,7 +4,7 @@ TP=$(go list -f '{{if len .GoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v "/ve
 CP=$(echo $TP | tr ' ', ',')
 set -x
 for pkg in $TP; do \
-	GO111MODULE=on go test -covermode=atomic -test.coverpkg "$CP" -c -o thetest && sudo -E ./thetest -test.v -test.coverprofile=profile_tmp.cov $pkg && sudo chmod 666 profile_tmp.cov || exit 1; \
+	GO111MODULE=on go test -v -covermode=atomic -coverprofile=profile_tmp.cov -coverpkg "$CP" $pkg || exit 1; \
 	tail -n +2 profile_tmp.cov >> profile.cov; \
 done
 exit $?
