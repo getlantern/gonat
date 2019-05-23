@@ -8,6 +8,7 @@ platform:
 steps:
 - name: test
   image: golang
+  privileged: true
   commands:
   - apt update
   - apt install lsof
