@@ -1,4 +1,4 @@
-gonat [![Travis CI Status](https://travis-ci.org/getlantern/gonat.svg?branch=master)](https://travis-ci.org/getlantern/gonat)&nbsp;[![Coverage Status](https://coveralls.io/repos/getlantern/gonat/badge.png)](https://coveralls.io/r/getlantern/gonat)&nbsp;[![GoDoc](https://godoc.org/github.com/getlantern/gonat?status.png)](http://godoc.org/github.com/getlantern/gonat)&nbsp;[![Sourcegraph](https://sourcegraph.com/github.com/getlantern/gonat/-/badge.svg)](https://sourcegraph.com/github.com/getlantern/gonat?badge)
+gonat [![wercker status](https://app.wercker.com/status/b351628f37972c7cc0b4d185f62e853e/s/master "wercker status")](https://app.wercker.com/project/byKey/b351628f37972c7cc0b4d185f62e853e)&nbsp;[![GoDoc](https://godoc.org/github.com/getlantern/gonat?status.png)](http://godoc.org/github.com/getlantern/gonat)&nbsp;[![Sourcegraph](https://sourcegraph.com/github.com/getlantern/gonat/-/badge.svg)](https://sourcegraph.com/github.com/getlantern/gonat?badge)
 ==========
 
 This library only works on Linux.
