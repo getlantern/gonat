@@ -9,4 +9,5 @@ steps:
 - name: test
   image: golang:1.12.5
   commands:
+  - apt-get install lsof
   - go test
