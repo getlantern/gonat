@@ -88,13 +88,13 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 
 func (s *server) Serve() error {
 	var err error
-	s.tcpSocket, err = createSocket(FiveTuple{IPProto: syscall.IPPROTO_TCP})
+	s.tcpSocket, err = createSocket(FiveTuple{IPProto: syscall.IPPROTO_TCP, Src: Addr{s.opts.IFAddr, 0}})
 	if err != nil {
 		return err
 	}
 	ops.Go(func() { s.readFromUpstream(s.tcpSocket) })
 
-	s.udpSocket, err = createSocket(FiveTuple{IPProto: syscall.IPPROTO_UDP})
+	s.udpSocket, err = createSocket(FiveTuple{IPProto: syscall.IPPROTO_UDP, Src: Addr{s.opts.IFAddr, 0}})
 	if err != nil {
 		return err
 	}
