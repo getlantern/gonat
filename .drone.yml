@@ -11,5 +11,5 @@ steps:
   privileged: true
   commands:
   - apt update
-  - apt install lsof
+  - apt install lsof net-tools
   - go test
