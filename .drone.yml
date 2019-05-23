@@ -7,7 +7,7 @@ platform:
 
 steps:
 - name: test
-  image: golang:1.12.5
+  image: golang
   commands:
   - apt update
   - apt install lsof
