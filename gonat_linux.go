@@ -111,6 +111,7 @@ func (s *server) dispatch() {
 		for _, c := range s.connsByDownFT {
 			c.Close()
 			s.deleteConn(c)
+			s.deleteConntrackEntry(c.upFT)
 		}
 		close(s.toDownstream)
 		s.tcpSocket.Close()
@@ -128,7 +129,7 @@ func (s *server) dispatch() {
 		case pkt := <-s.fromUpstream:
 			s.onPacketFromUpstream(pkt)
 		case c := <-s.closedConns:
-			s.deleteConn(c)
+			s.deleteConntrackEntry(c.upFT)
 		case <-reapTicker.C:
 			s.reapIdleConns()
 		case <-s.close:
@@ -166,6 +167,7 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 			}
 			s.connsByDownFT[downFT] = c
 			s.connsByUpFT[upFT] = c
+			c.markActive()
 			s.addConn(pkt.IPProto)
 		}
 		select {
@@ -245,6 +247,7 @@ func (s *server) reapIdleConns() {
 	for _, c := range s.connsByDownFT {
 		if c.timeSinceLastActive() > s.opts.IdleTimeout {
 			connsToClose = append(connsToClose, c)
+			s.deleteConn(c)
 		}
 	}
 	if len(connsToClose) > 0 {
@@ -260,7 +263,6 @@ func (s *server) reapIdleConns() {
 func (s *server) deleteConn(c *conn) {
 	delete(s.connsByDownFT, c.downFT)
 	delete(s.connsByUpFT, c.upFT)
-	s.deleteConntrackEntry(c.upFT)
 }
 
 // readFromDownstream reads all IP packets from downstream clients.
