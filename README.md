@@ -11,7 +11,7 @@ via netlink. You can give the binary the correct capabilities with:
 
 `sudo setcap CAP_NET_RAW,CAP_NET_ADMIN+ep`
 
-This libraryy requires the nf_conntrack module to be installed at runtime.
+This library requires the nf_conntrack module to be installed at runtime.
 
 ```
 modprobe nf_conntrack
@@ -22,7 +22,7 @@ iptables needs to be configured to drop the outbound RST packets that the kernel
 packets responding to our raw TCP connections. We do this only for tcp connections that are already in ESTABLISHED in conntrack.
 The library manually adds these to conntrack since we're using raw sockets.
 
-`sudo iptables -A OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP`
+`sudo iptables -I OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP`
 
 To run the unit tests, you need to have root permissions. It's also useful to enable tracing while running the tests.
 
