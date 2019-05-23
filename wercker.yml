@@ -17,9 +17,9 @@ build:
     # at the right place in the workspace tree
     - wercker/setup-go-workspace:
       package-dir: github.com/getlantern/gonat
-    - script:
-      name: enable-conntrack
-      code: sudo modprobe nf_conntrack && sudo modprobe nf_conntrack_ipv4
+    # - script:
+    #   name: enable-conntrack
+    #   code: sudo modprobe nf_conntrack && sudo modprobe nf_conntrack_ipv4
     - script:
       name: get goveralls
       code: |-
