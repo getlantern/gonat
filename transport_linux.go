@@ -16,7 +16,7 @@ import (
 // (depending no the specified proto). Being a raw socket, it allows us to send our
 // own IP packets.
 func (s *server) newConn(downFT FiveTuple, upFT FiveTuple) (*conn, error) {
-	socket, err := s.createSocket(upFT)
+	socket, err := createSocket(upFT)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +32,7 @@ func (s *server) newConn(downFT FiveTuple, upFT FiveTuple) (*conn, error) {
 	return c, nil
 }
 
-func (s *server) createSocket(upFT FiveTuple) (io.ReadWriteCloser, error) {
+func createSocket(upFT FiveTuple) (io.ReadWriteCloser, error) {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, int(upFT.IPProto))
 	if err != nil {
 		return nil, errors.New("Unable to create transport: %v", err)
