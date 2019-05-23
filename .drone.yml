@@ -15,6 +15,7 @@ steps:
   commands:
   - apt update
   - apt install lsof net-tools
-  - go get github.com/mattn/goveralls
   - iptables -D ufw-before-input -m conntrack --ctstate INVALID -j DROP || echo "Rule not found"
-  - goveralls -service drone.io
+  - go test -covermode=count -coverprofile=profile.cov
+  - go get github.com/mattn/goveralls
+  - goveralls -coverprofile=profile.cov -service drone.io
