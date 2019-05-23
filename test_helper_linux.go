@@ -35,6 +35,21 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 	if !assert.NoError(t, err, "unable to get initial raw socket count") {
 		return
 	}
+
+	// Open a TUN device
+	dev, err := tun.OpenTunDevice(tunDeviceName, tunAddr, tunGW, tunMask, mtu)
+	if err != nil {
+		if err != nil {
+			if strings.HasSuffix(err.Error(), "operation not permitted") {
+				t.Log("This test requires root access. Compile, then run with root privileges. See the README for more details.")
+			}
+			t.Fatal(err)
+		}
+	}
+	// for some reason, on some Linux installs, reading hangs even after the device is closed.
+	// withTimeout is a hack that allows to return an EOF to the reader before our test ends.
+	dev = withTimeout(dev, 5*time.Second)
+
 	grtracker := grtrack.Start()
 
 	opts := &Opts{}
@@ -50,17 +65,6 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 	port, _ := strconv.Atoi(_port)
 	origEchoAddr := Addr{host, uint16(port)}
 	echoAddr = tunGW + ":" + _port
-
-	// Open a TUN device
-	dev, err := tun.OpenTunDevice(tunDeviceName, tunAddr, tunGW, tunMask, mtu)
-	if err != nil {
-		if err != nil {
-			if strings.HasSuffix(err.Error(), "operation not permitted") {
-				t.Log("This test requires root access. Compile, then run with root privileges. See the README for more details.")
-			}
-			t.Fatal(err)
-		}
-	}
 
 	finishedCh := make(chan interface{})
 	beforeClose, err := doTest(opts.IFAddr, dev, origEchoAddr, finishedCh)
@@ -108,7 +112,9 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 
 	close(closeCh)
 	beforeClose()
-	dev.Close()
+	if err := dev.Close(); !assert.NoError(t, err) {
+		return
+	}
 
 	select {
 	case <-finishedCh:
@@ -172,4 +178,43 @@ func udpEcho(t *testing.T, closeCh <-chan interface{}, echoAddr string) {
 			conn.WriteTo(b[:n], addr)
 		}
 	}()
+}
+
+type read struct {
+	b   []byte
+	err error
+}
+
+func withTimeout(dev io.ReadWriteCloser, timeout time.Duration) io.ReadWriteCloser {
+	result := &timingOutReader{
+		ReadWriteCloser: dev,
+		timeout:         timeout,
+		reads:           make(chan *read),
+	}
+	go result.process()
+	return result
+}
+
+type timingOutReader struct {
+	io.ReadWriteCloser
+	timeout time.Duration
+	reads   chan *read
+}
+
+func (r *timingOutReader) process() {
+	for {
+		b := make([]byte, MaximumIPPacketSize)
+		n, err := r.ReadWriteCloser.Read(b)
+		r.reads <- &read{b[:n], err}
+	}
+}
+
+func (r *timingOutReader) Read(b []byte) (n int, err error) {
+	select {
+	case read := <-r.reads:
+		copy(b, read.b)
+		return len(read.b), read.err
+	case <-time.After(r.timeout):
+		return 0, io.EOF
+	}
 }
