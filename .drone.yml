@@ -9,7 +9,12 @@ steps:
 - name: test
   image: golang
   privileged: true
+  environment:
+    COVERALLS_TOKEN:
+      from_secret: coveralls_token
   commands:
   - apt update
   - apt install lsof net-tools
-  - go test
+  - go get github.com/mattn/goveralls
+  - iptables -D ufw-before-input -m conntrack --ctstate INVALID -j DROP || echo "Rule not found"
+  - goveralls -service drone.io
