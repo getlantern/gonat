@@ -16,6 +16,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	closeTimeout = 2 * time.Second
+)
+
 var (
 	serverTCPConnections int64
 )
@@ -48,7 +52,7 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 	}
 	// for some reason, on some Linux installs, reading hangs even after the device is closed.
 	// withTimeout is a hack that allows to return an EOF to the reader before our test ends.
-	dev = withTimeout(dev, 5*time.Second)
+	dev = withTimeout(dev, closeTimeout)
 
 	grtracker := grtrack.Start()
 
@@ -67,7 +71,7 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 	echoAddr = tunGW + ":" + _port
 
 	finishedCh := make(chan interface{})
-	beforeClose, err := doTest(opts.IFAddr, dev, origEchoAddr, finishedCh)
+	doClose, err := doTest(opts.IFAddr, dev, origEchoAddr, finishedCh)
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -111,11 +115,12 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 	assert.Zero(t, atomic.LoadInt64(&serverTCPConnections), "Server-side TCP connection should have been closed")
 
 	close(closeCh)
-	beforeClose()
 	if err := dev.Close(); !assert.NoError(t, err) {
 		return
 	}
+	doClose()
 
+	time.Sleep(2 * closeTimeout)
 	select {
 	case <-finishedCh:
 		tcpConnCount.AssertDelta(0)
