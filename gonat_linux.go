@@ -202,14 +202,14 @@ func (s *server) onPacketFromUpstream(pkt *IPPacket) {
 	}
 
 	pkt.SetDest(c.downFT.Src)
-	c.s.opts.OnInbound(pkt, c.downFT)
+	s.opts.OnInbound(pkt, c.downFT)
 	pkt.recalcChecksum()
 	c.markActive()
 	select {
-	case c.s.toDownstream <- pkt:
+	case s.toDownstream <- pkt:
 		// okay
 		log.Tracef("Transmit -- %v <- %v", c.downFT, c.upFT)
-		c.s.acceptedPacket()
+		s.acceptedPacket()
 	default:
 		log.Tracef("Stalled writing packet %v downstream", c.downFT)
 		s.dropPacket(pkt)

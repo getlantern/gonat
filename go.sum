@@ -61,6 +61,8 @@ github.com/mdlayher/netlink v0.0.0-20190514163018-336c8d74f4a0 h1:93Nlj3OMYLLA6Q
 github.com/mdlayher/netlink v0.0.0-20190514163018-336c8d74f4a0/go.mod h1:gOrA34zDL0K3RsACQe54bDYLF/CeFspQ9m5DOycycQ8=
 github.com/oxtoacart/bpool v0.0.0-20190227141107-8c4636f812cc h1:uhnyuvDwdKbjemAXHKsiEZOPagHim2nRjMcazH1g26A=
 github.com/oxtoacart/bpool v0.0.0-20190227141107-8c4636f812cc/go.mod h1:L3UMQOThbttwfYRNFOWLLVXMhk5Lkio4GGOtw5UrxS0=
+github.com/oxtoacart/bpool v0.0.0-20190524125616-8c0b41497736 h1:C9bEdTfu5QY+TIf4ohXC2oWkT88Qq3/t1yiUxf/Guvs=
+github.com/oxtoacart/bpool v0.0.0-20190524125616-8c0b41497736/go.mod h1:L3UMQOThbttwfYRNFOWLLVXMhk5Lkio4GGOtw5UrxS0=
 github.com/pkg/errors v0.8.1 h1:iURUrRGxPUNPdy5/HRSm+Yj6okJ6UtLINN0Q9M4+h3I=
 github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

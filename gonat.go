@@ -156,6 +156,7 @@ func firstIPv4AddrFor(ifName string) (string, error) {
 	return "", errors.New("Unable to find IPv4 address for interface %v", ifName)
 }
 
+// findDefaultIPv4Addr find the default IPv4 address through which the Internet can be reached.
 func findDefaultIPv4Addr() (string, error) {
 	// try to find default interface by dialing an external connection
 	conn, err := net.Dial("udp4", "lantern.io:80")
@@ -178,4 +179,6 @@ type BufferPool interface {
 	Get() []byte
 	// Put returns a byte slice to the pool
 	Put([]byte)
+	// NumPooled returns the number of currently pooled items
+	NumPooled() int
 }

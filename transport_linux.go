@@ -91,6 +91,7 @@ func (c *conn) writeToUpstream() {
 			pkt.SetSource(c.upFT.Src)
 			pkt.recalcChecksum()
 			_, err := c.Write(pkt.Raw)
+			c.s.bufferPool.Put(pkt.Raw)
 			if err != nil {
 				log.Errorf("Error writing upstream: %v", err)
 				return
