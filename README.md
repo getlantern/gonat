@@ -1,4 +1,4 @@
-gonat [![Build Status](https://drone.lantern.io/api/badges/getlantern/gonat/status.svg)](https://drone.lantern.io/getlantern/gonat)&nbsp;[![GoDoc](https://godoc.org/github.com/getlantern/gonat?status.png)](http://godoc.org/github.com/getlantern/gonat)
+gonat [![GoDoc](https://godoc.org/github.com/getlantern/gonat?status.png)](http://godoc.org/github.com/getlantern/gonat)&nbsp;[![Build Status](https://drone.lantern.io/api/badges/getlantern/gonat/status.svg)](https://drone.lantern.io/getlantern/gonat)&nbsp;[![Coverage Status](https://coveralls.io/repos/github/getlantern/gonat/badge.svg?branch=init)](https://coveralls.io/github/getlantern/gonat)
 ==========
 
 This library only works on Linux.
