@@ -24,6 +24,8 @@ The library manually adds these to conntrack since we're using raw sockets.
 
 `sudo iptables -I OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP`
 
+To undo this, run the same command, but replace the `-I` flag with the `-D` flag.
+
 To run the unit tests, you need to have root permissions. It's also useful to enable tracing while running the tests.
 
 ```
