@@ -70,19 +70,19 @@ type Opts struct {
 	IFAddr string
 
 	// BufferPool is a pool for buffers. If not provided, default to a 10MB pool.
-	// Each []byte in the buffer pool should be 65536 bytes.
+	// Each []byte in the buffer pool should be <MaximumIPPacketSize> bytes.
 	BufferPool BufferPool
 
 	// BufferDepth specifies the number of outbound packets to buffer between
-	// stages in the send/receive pipeline. The default is 250.
+	// stages in the send/receive pipeline. The default is <DefaultBufferDepth>.
 	BufferDepth int
 
 	// IdleTimeout specifies the amount of time before idle connections are
-	// automatically closed. The default is 65 seconds.
+	// automatically closed. The default is <DefaultIdleTimeout>.
 	IdleTimeout time.Duration
 
-	// StatsInterval controls how frequently to display stats. Defaults to 15
-	// seconds.
+	// StatsInterval controls how frequently to display stats. Defaults to
+	// <DefaultStatsInterval>.
 	StatsInterval time.Duration
 
 	// OnOutbound allows modifying outbound ip packets.

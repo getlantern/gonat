@@ -9,7 +9,7 @@ variable `GO111MODULE=on` to enable use of modules.
 In order to work, this library needs to be able to open raw sockets and update the conntrack table
 via netlink. You can give the binary the correct capabilities with:
 
-`sudo setcap CAP_NET_RAW,CAP_NET_ADMIN+ep`
+`sudo setcap CAP_NET_RAW,CAP_NET_ADMIN+ep <name_of_binary>`
 
 This library requires the nf_conntrack module to be installed at runtime.
 

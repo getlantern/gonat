@@ -9,7 +9,7 @@ import (
 
 	"github.com/getlantern/errors"
 	"github.com/getlantern/ops"
-	ct "github.com/ti-mo/conntrack"
+	"github.com/ti-mo/conntrack"
 )
 
 type server struct {
@@ -23,7 +23,7 @@ type server struct {
 	downstream         io.ReadWriter
 	opts               *Opts
 	bufferPool         BufferPool
-	ctrack             *ct.Conn
+	ctrack             *conntrack.Conn
 	ctTimeout          uint32
 	randomPortSequence []uint16
 	portIndexes        map[uint8]map[Addr]int
@@ -34,6 +34,7 @@ type server struct {
 	fromUpstream       chan *IPPacket
 	closedConns        chan *conn
 	close              chan interface{}
+	closed             chan interface{}
 }
 
 // NewServer constructs a new Server that reads packets from downstream
@@ -46,10 +47,6 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 
 	log.Debugf("Outbound packets will use %v", opts.IFAddr)
 
-	ctrack, err := ct.Dial(nil)
-	if err != nil {
-		return nil, errors.New("Unable to obtain connection for managing conntrack: %v", err)
-	}
 	_ctTimeout := opts.IdleTimeout * 2
 	if _ctTimeout < MinConntrackTimeout {
 		_ctTimeout = MinConntrackTimeout
@@ -71,7 +68,6 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 		downstream:         downstream,
 		opts:               opts,
 		bufferPool:         opts.BufferPool,
-		ctrack:             ctrack,
 		ctTimeout:          ctTimeout,
 		randomPortSequence: randomPortSequence,
 		portIndexes:        make(map[uint8]map[Addr]int),
@@ -82,6 +78,7 @@ func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
 		fromUpstream:       make(chan *IPPacket, opts.BufferDepth),
 		closedConns:        make(chan *conn, opts.BufferDepth),
 		close:              make(chan interface{}),
+		closed:             make(chan interface{}),
 	}
 	return s, nil
 }
@@ -96,9 +93,17 @@ func (s *server) Serve() error {
 
 	s.udpSocket, err = createSocket(FiveTuple{IPProto: syscall.IPPROTO_UDP, Src: Addr{s.opts.IFAddr, 0}})
 	if err != nil {
+		s.tcpSocket.Close()
 		return err
 	}
 	ops.Go(func() { s.readFromUpstream(s.udpSocket) })
+
+	s.ctrack, err = conntrack.Dial(nil)
+	if err != nil {
+		s.tcpSocket.Close()
+		s.udpSocket.Close()
+		return errors.New("Unable to obtain connection for managing conntrack: %v", err)
+	}
 
 	ops.Go(s.trackStats)
 	ops.Go(s.dispatch)
@@ -117,6 +122,7 @@ func (s *server) dispatch() {
 		s.tcpSocket.Close()
 		s.udpSocket.Close()
 		s.ctrack.Close()
+		close(s.closed)
 	}()
 
 	reapTicker := time.NewTicker(1 * time.Second)
@@ -329,9 +335,9 @@ func (s *server) Close() error {
 	select {
 	case <-s.close:
 		// already closed
-		return nil
 	default:
 		close(s.close)
-		return nil
 	}
+	<-s.closed
+	return nil
 }
