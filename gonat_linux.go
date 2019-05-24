@@ -14,7 +14,8 @@ import (
 
 type server struct {
 	acceptedPackets int64
-	rejectedPackets int64
+	invalidPackets  int64
+	droppedPackets  int64
 	numTCPConns     int64
 	numUDPConns     int64
 
@@ -187,7 +188,7 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 		}
 	default:
 		log.Tracef("Unknown IP protocol, ignoring packet %v: %v", pkt.FT(), pkt.IPProto)
-		s.dropPacket(pkt)
+		s.rejectPacket(pkt.Raw)
 	}
 }
 
@@ -195,23 +196,24 @@ func (s *server) onPacketFromUpstream(pkt *IPPacket) {
 	upFT := pkt.FT().Reversed()
 	c := s.connsByUpFT[upFT]
 	if c == nil {
-		log.Tracef("Dropping packet for unknown upstream FT: %v", upFT)
-		s.dropPacket(pkt)
+		log.Tracef("Ignoring packet for unknown upstream FT: %v", upFT)
+		s.rejectPacket(pkt.Raw)
 		return
 	}
 
 	pkt.SetDest(c.downFT.Src)
 	c.s.opts.OnInbound(pkt, c.downFT)
 	pkt.recalcChecksum()
-	c.s.acceptedPacket()
 	c.markActive()
-	log.Tracef("Transmit -- %v <- %v", c.downFT, c.upFT)
-	c.s.toDownstream <- pkt
-}
-
-func (s *server) dropPacket(pkt *IPPacket) {
-	s.rejectedPacket()
-	s.bufferPool.Put(pkt.Raw)
+	select {
+	case c.s.toDownstream <- pkt:
+		// okay
+		log.Tracef("Transmit -- %v <- %v", c.downFT, c.upFT)
+		c.s.acceptedPacket()
+	default:
+		log.Tracef("Stalled writing packet %v downstream", c.downFT)
+		s.dropPacket(pkt)
+	}
 }
 
 // assignPort assigns an ephemeral local port for a new connection. If an existing connection
@@ -288,7 +290,7 @@ func (s *server) readFromDownstream() error {
 		pkt, err := parseIPPacket(raw)
 		if err != nil {
 			log.Tracef("Error on inbound packet, ignoring: %v", err)
-			s.rejectedPacket()
+			s.rejectPacket(raw)
 			continue
 		}
 		s.fromDownstream <- pkt
@@ -314,21 +316,29 @@ func (s *server) readFromUpstream(socket io.ReadWriteCloser) {
 		b := s.bufferPool.Get()
 		n, err := socket.Read(b)
 		if err != nil {
-			s.rejectedPacket()
-			s.bufferPool.Put(b)
+			s.rejectPacket(b)
 			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
 				continue
 			}
 			return
 		}
 		if pkt, err := parseIPPacket(b[:n]); err != nil {
-			log.Tracef("Dropping unparseable packet from upstream: %v", err)
-			s.rejectedPacket()
-			s.bufferPool.Put(b)
+			log.Tracef("Ignoring unparseable packet from upstream: %v", err)
+			s.rejectPacket(b)
 		} else {
 			s.fromUpstream <- pkt
 		}
 	}
+}
+
+func (s *server) rejectPacket(b []byte) {
+	s.invalidPacket()
+	s.bufferPool.Put(b)
+}
+
+func (s *server) dropPacket(pkt *IPPacket) {
+	s.droppedPacket()
+	s.bufferPool.Put(pkt.Raw)
 }
 
 func (s *server) Close() error {

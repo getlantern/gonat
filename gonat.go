@@ -46,8 +46,12 @@ type Server interface {
 	// Count of accepted packets
 	AcceptedPackets() int
 
-	// Count of rejected packets
-	RejectedPackets() int
+	// Count of invalid packets (unknown destination, wrong IP version, etc.)
+	InvalidPackets() int
+
+	// Count of packets dropped due to being stalled writing down or upstream, being unable to assign a port
+	// open a connection, etc.
+	DroppedPackets() int
 
 	// Number of TCP connections being tracked
 	NumTCPConns() int

@@ -16,7 +16,7 @@ func (s *server) trackStats() {
 			return
 		case <-ticker.C:
 			log.Debugf("TCP Conns: %v    UDP Conns: %v", s.NumTCPConns(), s.NumUDPConns())
-			log.Debugf("Accepted Packets: %d    Rejected Packets: %d", s.AcceptedPackets(), s.RejectedPackets())
+			log.Debugf("Invalid Packets: %d    Accepted Packets: %d    Dropped Packets: %d", s.InvalidPackets(), s.AcceptedPackets(), s.DroppedPackets())
 		}
 	}
 }
@@ -29,12 +29,20 @@ func (s *server) AcceptedPackets() int {
 	return int(atomic.LoadInt64(&s.acceptedPackets))
 }
 
-func (s *server) rejectedPacket() {
-	atomic.AddInt64(&s.rejectedPackets, 1)
+func (s *server) invalidPacket() {
+	atomic.AddInt64(&s.invalidPackets, 1)
 }
 
-func (s *server) RejectedPackets() int {
-	return int(atomic.LoadInt64(&s.rejectedPackets))
+func (s *server) InvalidPackets() int {
+	return int(atomic.LoadInt64(&s.invalidPackets))
+}
+
+func (s *server) droppedPacket() {
+	atomic.AddInt64(&s.droppedPackets, 1)
+}
+
+func (s *server) DroppedPackets() int {
+	return int(atomic.LoadInt64(&s.droppedPackets))
 }
 
 func (s *server) addConn(proto uint8) {
