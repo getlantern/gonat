@@ -43,22 +43,6 @@ type Server interface {
 	// Serve starts processing packets and blocks until finished
 	Serve() error
 
-	// Count of accepted packets
-	AcceptedPackets() int
-
-	// Count of invalid packets (unknown destination, wrong IP version, etc.)
-	InvalidPackets() int
-
-	// Count of packets dropped due to being stalled writing down or upstream, being unable to assign a port
-	// open a connection, etc.
-	DroppedPackets() int
-
-	// Number of TCP connections being tracked
-	NumTCPConns() int
-
-	// Number of UDP connections being tracked
-	NumUDPConns() int
-
 	// Close stops the server and cleans up resources
 	Close() error
 }
@@ -84,6 +68,12 @@ type Opts struct {
 	// IdleTimeout specifies the amount of time before idle connections are
 	// automatically closed. The default is <DefaultIdleTimeout>.
 	IdleTimeout time.Duration
+
+	// StatsTracker allows specifying an existing StatsTracker to use for tracking
+	// stats. If not specified, one will be created using the configured StatsInterval.
+	// Note - the StatsTracker has to be manually closed using its Close() method, otherwise
+	// it will keep logging stats.
+	StatsTracker *StatsTracker
 
 	// StatsInterval controls how frequently to display stats. Defaults to
 	// <DefaultStatsInterval>.
@@ -114,6 +104,9 @@ func (opts *Opts) ApplyDefaults() error {
 	}
 	if opts.StatsInterval <= 0 {
 		opts.StatsInterval = DefaultStatsInterval
+	}
+	if opts.StatsTracker == nil {
+		opts.StatsTracker = NewStatsTracker(opts.StatsInterval)
 	}
 	if opts.OnOutbound == nil {
 		opts.OnOutbound = func(pkt *IPPacket) {}

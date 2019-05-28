@@ -13,12 +13,6 @@ import (
 )
 
 type server struct {
-	acceptedPackets int64
-	invalidPackets  int64
-	droppedPackets  int64
-	numTCPConns     int64
-	numUDPConns     int64
-
 	tcpSocket          io.ReadWriteCloser
 	udpSocket          io.ReadWriteCloser
 	downstream         io.ReadWriter
@@ -106,7 +100,7 @@ func (s *server) Serve() error {
 		return errors.New("Unable to obtain connection for managing conntrack: %v", err)
 	}
 
-	ops.Go(s.trackStats)
+	s.opts.StatsTracker.start()
 	ops.Go(s.dispatch)
 	ops.Go(s.writeToDownstream)
 	return s.readFromDownstream()
@@ -175,12 +169,12 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 			s.connsByDownFT[downFT] = c
 			s.connsByUpFT[upFT] = c
 			c.markActive()
-			s.addConn(pkt.IPProto)
+			s.opts.StatsTracker.addConn(pkt.IPProto)
 		}
 		select {
 		case c.toUpstream <- pkt:
 			log.Tracef("Transmit --  %v -> %v", c.downFT, c.upFT)
-			s.acceptedPacket()
+			s.opts.StatsTracker.acceptedPacket()
 		default:
 			// don't block if we're stalled writing upstream
 			log.Tracef("Stalled writing packet %v upstream", downFT)
@@ -209,7 +203,7 @@ func (s *server) onPacketFromUpstream(pkt *IPPacket) {
 	case s.toDownstream <- pkt:
 		// okay
 		log.Tracef("Transmit -- %v <- %v", c.downFT, c.upFT)
-		s.acceptedPacket()
+		s.opts.StatsTracker.acceptedPacket()
 	default:
 		log.Tracef("Stalled writing packet %v downstream", c.downFT)
 		s.dropPacket(pkt)
@@ -332,12 +326,12 @@ func (s *server) readFromUpstream(socket io.ReadWriteCloser) {
 }
 
 func (s *server) rejectPacket(b []byte) {
-	s.invalidPacket()
+	s.opts.StatsTracker.invalidPacket()
 	s.bufferPool.Put(b)
 }
 
 func (s *server) dropPacket(pkt *IPPacket) {
-	s.droppedPacket()
+	s.opts.StatsTracker.droppedPacket()
 	s.bufferPool.Put(pkt.Raw)
 }
 
