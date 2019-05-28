@@ -35,6 +35,7 @@ func TestEndToEnd(t *testing.T) {
 			assert.Equal(t, io.EOF, s.Serve())
 			_s := s.(*server)
 			assert.True(t, _s.bufferPool.NumPooled() > 0, "buffers should be returned to pool")
+			_s.opts.StatsTracker.Close()
 			close(finishedCh)
 		}()
 		return func() error { return nil }, nil
