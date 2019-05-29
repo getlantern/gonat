@@ -17,6 +17,7 @@ steps:
   - apt-get -q -y install lsof net-tools iptables
   - iptables -D ufw-before-input -m conntrack --ctstate INVALID -j DROP || echo "Rule not found"
   - iptables -I OUTPUT -p tcp -m conntrack --ctstate ESTABLISHED --ctdir ORIGINAL --tcp-flags RST RST -j DROP
+  - go test -race
   - go test -covermode=count -coverprofile=profile.cov
   - go get github.com/mattn/goveralls
   - goveralls -coverprofile=profile.cov
