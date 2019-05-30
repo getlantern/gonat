@@ -20,4 +20,4 @@ steps:
   - go test -race
   - go test -covermode=count -coverprofile=profile.cov
   - go get github.com/mattn/goveralls
-  - goveralls -coverprofile=profile.cov
+  - goveralls -service drone.io -coverprofile=profile.cov
