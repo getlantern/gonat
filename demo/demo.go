@@ -51,7 +51,7 @@ func main() {
 	}
 	defer dev.Close()
 
-	s, err := gonat.NewServer(dev, &gonat.Opts{
+	s, err := gonat.NewServer(&gonat.ReadWriterAdapter{dev}, &gonat.Opts{
 		IFName:      *ifOut,
 		IdleTimeout: 5 * time.Second,
 		BufferDepth: 10000,

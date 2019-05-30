@@ -18,7 +18,7 @@ const (
 // TUN device.
 func TestEndToEnd(t *testing.T) {
 	RunTest(t, "tun0", "10.0.0.10", tunGW, "255.255.255.0", 1500, func(ifAddr string, dev io.ReadWriter, origEchoAddr Addr, finishedCh chan interface{}) (func() error, error) {
-		s, err := NewServer(dev, &Opts{
+		s, err := NewServer(&ReadWriterAdapter{dev}, &Opts{
 			StatsInterval: 250 * time.Millisecond,
 			OnOutbound: func(pkt *IPPacket) {
 				pkt.SetDest(origEchoAddr)

@@ -63,6 +63,12 @@ github.com/oxtoacart/bpool v0.0.0-20190227141107-8c4636f812cc h1:uhnyuvDwdKbjemA
 github.com/oxtoacart/bpool v0.0.0-20190227141107-8c4636f812cc/go.mod h1:L3UMQOThbttwfYRNFOWLLVXMhk5Lkio4GGOtw5UrxS0=
 github.com/oxtoacart/bpool v0.0.0-20190524125616-8c0b41497736 h1:C9bEdTfu5QY+TIf4ohXC2oWkT88Qq3/t1yiUxf/Guvs=
 github.com/oxtoacart/bpool v0.0.0-20190524125616-8c0b41497736/go.mod h1:L3UMQOThbttwfYRNFOWLLVXMhk5Lkio4GGOtw5UrxS0=
+github.com/oxtoacart/bpool v0.0.0-20190530171743-4d13abbab7c8 h1:cpf4Df5gahSboZoqbVv/0iufNLwdzeaARtvzqi7KxdQ=
+github.com/oxtoacart/bpool v0.0.0-20190530171743-4d13abbab7c8/go.mod h1:X07ZCGwUbLaax7L0S3Tw4hpejzu63ZrrQiUe6W0hcy0=
+github.com/oxtoacart/bpool v0.0.0-20190530173437-18b0496e4113 h1:sN9LdxWNPtGP6pKLZMHbs5ZF6gcj0bN7KjmrGGcKPDc=
+github.com/oxtoacart/bpool v0.0.0-20190530173437-18b0496e4113/go.mod h1:X07ZCGwUbLaax7L0S3Tw4hpejzu63ZrrQiUe6W0hcy0=
+github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c h1:rp5dCmg/yLR3mgFuSOe4oEnDDmGLROTvMragMUXpTQw=
+github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c/go.mod h1:X07ZCGwUbLaax7L0S3Tw4hpejzu63ZrrQiUe6W0hcy0=
 github.com/pkg/errors v0.8.1 h1:iURUrRGxPUNPdy5/HRSm+Yj6okJ6UtLINN0Q9M4+h3I=
 github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

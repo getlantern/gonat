@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/oxtoacart/bpool"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -16,7 +17,7 @@ func TestTCP(t *testing.T) {
 		return
 	}
 
-	pkt, err := parseIPPacket(raw)
+	pkt, err := parseIPPacket(bpool.WrapByteSlice(raw, 0))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -36,7 +37,7 @@ func TestHasRST(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
-	pkt, err := parseIPPacket(withRST)
+	pkt, err := parseIPPacket(bpool.WrapByteSlice(withRST, 0))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -46,7 +47,7 @@ func TestHasRST(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
-	pkt, err = parseIPPacket(withoutRST)
+	pkt, err = parseIPPacket(bpool.WrapByteSlice(withoutRST, 0))
 	if !assert.NoError(t, err) {
 		return
 	}

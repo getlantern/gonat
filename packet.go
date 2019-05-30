@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/getlantern/errors"
+	"github.com/oxtoacart/bpool"
 )
 
 // TCPFlags are the different flags supported in the TCP header
@@ -23,8 +24,8 @@ var (
 	networkByteOrder = binary.BigEndian
 )
 
-func parseIPPacket(raw []byte) (*IPPacket, error) {
-	ipVersion := uint8(raw[0]) >> 4
+func parseIPPacket(raw bpool.ByteSlice) (*IPPacket, error) {
+	ipVersion := uint8(raw.Bytes()[0]) >> 4
 	if ipVersion != 4 {
 		return nil, errors.New("Unsupported ip protocol version: %v", ipVersion)
 	}
@@ -34,7 +35,7 @@ func parseIPPacket(raw []byte) (*IPPacket, error) {
 }
 
 type IPPacket struct {
-	Raw       []byte
+	Raw       bpool.ByteSlice
 	IPVersion uint8
 	IPProto   uint8
 	SrcAddr   *net.IPAddr
@@ -44,20 +45,21 @@ type IPPacket struct {
 }
 
 func (pkt *IPPacket) parseV4() (*IPPacket, error) {
-	ihl := uint8(pkt.Raw[0]) & 0x0F
-	length := networkByteOrder.Uint16(pkt.Raw[2:4])
+	raw := pkt.Raw.Bytes()
+	ihl := uint8(raw[0]) & 0x0F
+	length := networkByteOrder.Uint16(raw[2:4])
 	if length < 20 {
 		return pkt, errors.New("Invalid (too small) IP length (%d < 20)", length)
 	} else if ihl < 5 {
 		return pkt, errors.New("Invalid (too small) IP header length (%d < 5)", ihl)
 	} else if int(ihl*4) > int(length) {
 		return pkt, errors.New("Invalid IP header length > IP length (%d > %d)", ihl, length)
-	} else if int(ihl)*4 > len(pkt.Raw) {
+	} else if int(ihl)*4 > len(raw) {
 		return pkt, errors.New("Not all IP header bytes available")
 	}
 
-	pkt.Header = pkt.Raw[:ihl*4]
-	pkt.Payload = pkt.Raw[ihl*4:]
+	pkt.Header = raw[:ihl*4]
+	pkt.Payload = raw[ihl*4:]
 	pkt.IPProto = uint8(pkt.Header[9])
 	pkt.SrcAddr = &net.IPAddr{IP: net.IP(pkt.Header[12:16])}
 	pkt.DstAddr = &net.IPAddr{IP: net.IP(pkt.Header[16:20])}

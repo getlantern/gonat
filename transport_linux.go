@@ -90,8 +90,8 @@ func (c *conn) writeToUpstream() {
 		case pkt := <-c.toUpstream:
 			pkt.SetSource(c.upFT.Src)
 			pkt.recalcChecksum()
-			_, err := c.Write(pkt.Raw)
-			c.s.bufferPool.Put(pkt.Raw)
+			_, err := c.Write(pkt.Raw.Bytes())
+			c.s.bufferPool.PutSlice(pkt.Raw)
 			if err != nil {
 				log.Errorf("Error writing upstream: %v", err)
 				return

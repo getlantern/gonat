@@ -9,15 +9,16 @@ import (
 
 	"github.com/getlantern/errors"
 	"github.com/getlantern/ops"
+	"github.com/oxtoacart/bpool"
 	"github.com/ti-mo/conntrack"
 )
 
 type server struct {
 	tcpSocket          io.ReadWriteCloser
 	udpSocket          io.ReadWriteCloser
-	downstream         io.ReadWriter
+	downstream         ReadWriter
 	opts               *Opts
-	bufferPool         BufferPool
+	bufferPool         bpool.ByteSlicePool
 	ctrack             *conntrack.Conn
 	ctTimeout          uint32
 	randomPortSequence []uint16
@@ -34,7 +35,7 @@ type server struct {
 
 // NewServer constructs a new Server that reads packets from downstream
 // and writes response packets back to downstream.
-func NewServer(downstream io.ReadWriter, opts *Opts) (Server, error) {
+func NewServer(downstream ReadWriter, opts *Opts) (Server, error) {
 	err := opts.ApplyDefaults()
 	if err != nil {
 		return nil, errors.New("Error applying default options: %v", err)
@@ -272,7 +273,7 @@ func (s *server) readFromDownstream() error {
 	defer s.Close()
 
 	for {
-		b := s.bufferPool.Get()
+		b := s.bufferPool.GetSlice()
 		n, err := s.downstream.Read(b)
 		if err != nil {
 			if err == io.EOF {
@@ -280,7 +281,7 @@ func (s *server) readFromDownstream() error {
 			}
 			return errors.New("Unexpected error reading from downstream: %v", err)
 		}
-		raw := b[:n]
+		raw := b.ResliceTo(n)
 		pkt, err := parseIPPacket(raw)
 		if err != nil {
 			log.Tracef("Error on inbound packet, ignoring: %v", err)
@@ -295,7 +296,7 @@ func (s *server) readFromDownstream() error {
 func (s *server) writeToDownstream() {
 	for pkt := range s.toDownstream {
 		_, err := s.downstream.Write(pkt.Raw)
-		s.bufferPool.Put(pkt.Raw)
+		s.bufferPool.PutSlice(pkt.Raw)
 		if err != nil {
 			log.Errorf("Unexpected error writing to downstream: %v", err)
 			return
@@ -307,8 +308,8 @@ func (s *server) readFromUpstream(socket io.ReadWriteCloser) {
 	defer socket.Close()
 
 	for {
-		b := s.bufferPool.Get()
-		n, err := socket.Read(b)
+		b := s.bufferPool.GetSlice()
+		n, err := socket.Read(b.Bytes())
 		if err != nil {
 			s.rejectPacket(b)
 			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
@@ -316,7 +317,7 @@ func (s *server) readFromUpstream(socket io.ReadWriteCloser) {
 			}
 			return
 		}
-		if pkt, err := parseIPPacket(b[:n]); err != nil {
+		if pkt, err := parseIPPacket(b.ResliceTo(n)); err != nil {
 			log.Tracef("Ignoring unparseable packet from upstream: %v", err)
 			s.rejectPacket(b)
 		} else {
@@ -325,14 +326,14 @@ func (s *server) readFromUpstream(socket io.ReadWriteCloser) {
 	}
 }
 
-func (s *server) rejectPacket(b []byte) {
+func (s *server) rejectPacket(b bpool.ByteSlice) {
 	s.opts.StatsTracker.invalidPacket()
-	s.bufferPool.Put(b)
+	s.bufferPool.PutSlice(b)
 }
 
 func (s *server) dropPacket(pkt *IPPacket) {
 	s.opts.StatsTracker.droppedPacket()
-	s.bufferPool.Put(pkt.Raw)
+	s.bufferPool.PutSlice(pkt.Raw)
 }
 
 func (s *server) Close() error {

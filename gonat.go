@@ -1,6 +1,7 @@
 package gonat
 
 import (
+	"io"
 	"net"
 	"time"
 
@@ -47,6 +48,28 @@ type Server interface {
 	Close() error
 }
 
+// ReadWriter is like io.ReadWriter but using bpool.ByteSlice.
+type ReadWriter interface {
+	// Read reads data into a ByteSlice
+	Read(bpool.ByteSlice) (int, error)
+
+	// Write writes data from a ByteSlice
+	Write(bpool.ByteSlice) (int, error)
+}
+
+// ReadWriterAdapter adapts io.ReadWriter to ReadWriter
+type ReadWriterAdapter struct {
+	io.ReadWriter
+}
+
+func (rw *ReadWriterAdapter) Read(b bpool.ByteSlice) (int, error) {
+	return rw.ReadWriter.Read(b.Bytes())
+}
+
+func (rw *ReadWriterAdapter) Write(b bpool.ByteSlice) (int, error) {
+	return rw.ReadWriter.Write(b.Bytes())
+}
+
 type Opts struct {
 	// IFName is the name of the interface to use for connecting upstream.
 	// If not specified, this will use the default interface for reaching the
@@ -59,7 +82,7 @@ type Opts struct {
 
 	// BufferPool is a pool for buffers. If not provided, default to a 10MB pool.
 	// Each []byte in the buffer pool should be <MaximumIPPacketSize> bytes.
-	BufferPool BufferPool
+	BufferPool bpool.ByteSlicePool
 
 	// BufferDepth specifies the number of outbound packets to buffer between
 	// stages in the send/receive pipeline. The default is <DefaultBufferDepth>.
@@ -94,7 +117,7 @@ func (opts *Opts) ApplyDefaults() error {
 		opts = &Opts{}
 	}
 	if opts.BufferPool == nil {
-		opts.BufferPool = NewBufferPool(DefaultBufferPoolSize)
+		opts.BufferPool = bpool.NewByteSlicePool(DefaultBufferPoolSize/MaximumIPPacketSize, MaximumIPPacketSize)
 	}
 	if opts.BufferDepth <= 0 {
 		opts.BufferDepth = DefaultBufferDepth
@@ -158,20 +181,4 @@ func findDefaultIPv4Addr() (string, error) {
 	}
 	ip := conn.LocalAddr().(*net.UDPAddr).IP.String()
 	return ip, nil
-}
-
-// NewBufferPool creates a buffer pool with the given sizeInBytes containing slices
-// sized to accomodate our MaximumIPPacketSize.
-func NewBufferPool(sizeInBytes int) BufferPool {
-	return bpool.NewBytePool(sizeInBytes, MaximumIPPacketSize)
-}
-
-// BufferPool is a bool of byte slices
-type BufferPool interface {
-	// Get gets a byte slice from the pool
-	Get() []byte
-	// Put returns a byte slice to the pool
-	Put([]byte)
-	// NumPooled returns the number of currently pooled items
-	NumPooled() int
 }
