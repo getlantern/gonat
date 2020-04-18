@@ -19,7 +19,9 @@ const (
 func TestEndToEnd(t *testing.T) {
 	RunTest(t, "tun0", "10.0.0.10", tunGW, "255.255.255.0", 1500, func(ifAddr string, dev io.ReadWriter, origEchoAddr Addr, finishedCh chan interface{}) (func() error, error) {
 		s, err := NewServer(&ReadWriterAdapter{dev}, &Opts{
+			IdleTimeout:   2 * time.Second,
 			StatsInterval: 250 * time.Millisecond,
+			BufferDepth:   1,
 			OnOutbound: func(pkt *IPPacket) {
 				pkt.SetDest(origEchoAddr)
 			},
@@ -32,7 +34,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 
 		go func() {
-			assert.Equal(t, io.EOF, s.Serve())
+			s.Serve()
 			_s := s.(*server)
 			assert.True(t, _s.bufferPool.NumPooled() > 0, "buffers should be returned to pool")
 			_s.opts.StatsTracker.Close()

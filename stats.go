@@ -11,15 +11,20 @@ import (
 
 // StatsTracker tracks statistics for one or more gonat servers.
 type StatsTracker struct {
-	acceptedPackets int64
-	invalidPackets  int64
-	droppedPackets  int64
-	numTCPConns     int64
-	numUDPConns     int64
-	statsInterval   time.Duration
-	startOnce       sync.Once
-	stop            chan interface{}
-	stopped         chan interface{}
+	acceptedPackets   int64
+	invalidPackets    int64
+	droppedPackets    int64
+	numServers        int64
+	numServersClosing int64
+	numServersClosed  int64
+	numTCPConns       int64
+	numUDPConns       int64
+	numTCPConnsClosed int64
+	numUDPConnsClosed int64
+	statsInterval     time.Duration
+	startOnce         sync.Once
+	stop              chan interface{}
+	stopped           chan interface{}
 }
 
 // NewStatsTracker creates a new StatsTracker that will log stats at the given statsInterval.
@@ -61,7 +66,9 @@ func (s *StatsTracker) trackStats() {
 		case <-s.stop:
 			return
 		case <-ticker.C:
-			log.Debugf("TCP Conns: %v    UDP Conns: %v", s.NumTCPConns(), s.NumUDPConns())
+			log.Debugf("Servers: %d    Closing: %d    Closed: %d", s.NumServers(), s.NumServersClosing(), s.NumServersClosed())
+			log.Debugf("TCP Conns: %d    Closed: %d", s.NumTCPConns(), s.NumTCPConnsClosed())
+			log.Debugf("UDP Conns: %d    Closed: %d", s.NumUDPConns(), s.NumUDPConnsClosed())
 			log.Debugf("Invalid Packets: %d    Accepted Packets: %d    Dropped Packets: %d", s.InvalidPackets(), s.AcceptedPackets(), s.DroppedPackets())
 		}
 	}
@@ -95,7 +102,35 @@ func (s *StatsTracker) DroppedPackets() int {
 	return int(atomic.LoadInt64(&s.droppedPackets))
 }
 
-func (s *StatsTracker) addConn(proto uint8) {
+func (s *StatsTracker) serverStarted() {
+	atomic.AddInt64(&s.numServers, 1)
+}
+
+func (s *StatsTracker) startClosingServer() {
+	atomic.AddInt64(&s.numServersClosing, 1)
+}
+
+func (s *StatsTracker) serverClosed() {
+	atomic.AddInt64(&s.numServersClosing, -1)
+	atomic.AddInt64(&s.numServers, -1)
+}
+
+// NumServers gives a count of the number of gonat servers currently running
+func (s *StatsTracker) NumServers() int {
+	return int(atomic.LoadInt64(&s.numServers))
+}
+
+// NumServersClosing gives a count of the number of gonat servers currently closing
+func (s *StatsTracker) NumServersClosing() int {
+	return int(atomic.LoadInt64(&s.numServersClosing))
+}
+
+// NumServersClosed gives a count of the number of gonat servers closed
+func (s *StatsTracker) NumServersClosed() int {
+	return int(atomic.LoadInt64(&s.numServersClosed))
+}
+
+func (s *StatsTracker) openedConn(proto uint8) {
 	switch proto {
 	case syscall.IPPROTO_TCP:
 		atomic.AddInt64(&s.numTCPConns, 1)
@@ -104,11 +139,13 @@ func (s *StatsTracker) addConn(proto uint8) {
 	}
 }
 
-func (s *StatsTracker) removeConn(proto uint8) {
+func (s *StatsTracker) closedConn(proto uint8) {
 	switch proto {
 	case syscall.IPPROTO_TCP:
+		atomic.AddInt64(&s.numTCPConnsClosed, 1)
 		atomic.AddInt64(&s.numTCPConns, -1)
 	case syscall.IPPROTO_UDP:
+		atomic.AddInt64(&s.numUDPConnsClosed, 1)
 		atomic.AddInt64(&s.numUDPConns, -1)
 	}
 }
@@ -121,4 +158,14 @@ func (s *StatsTracker) NumTCPConns() int {
 // NumUDPConns gives a count of the number of UDP connections being tracked
 func (s *StatsTracker) NumUDPConns() int {
 	return int(atomic.LoadInt64(&s.numUDPConns))
+}
+
+// NumTCPConnsClosed gives a count of the number of TCP connections that have been closed
+func (s *StatsTracker) NumTCPConnsClosed() int {
+	return int(atomic.LoadInt64(&s.numTCPConnsClosed))
+}
+
+// NumUDPConnsClosed gives a count of the number of UDP connections that have been closed
+func (s *StatsTracker) NumUDPConnsClosed() int {
+	return int(atomic.LoadInt64(&s.numUDPConnsClosed))
 }
