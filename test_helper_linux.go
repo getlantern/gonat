@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/getlantern/fdcount"
-	tun "github.com/getlantern/gotun"
 	"github.com/getlantern/grtrack"
 
 	"github.com/stretchr/testify/assert"
@@ -41,7 +40,8 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 	}
 
 	// Open a TUN device
-	dev, err := tun.OpenTunDevice(tunDeviceName, tunAddr, tunGW, tunMask, mtu)
+	log.Debugf("Opening TUN device at %v", tunAddr)
+	dev, err := TUNDevice(tunDeviceName, tunAddr, tunMask, mtu)
 	if err != nil {
 		if err != nil {
 			if strings.HasSuffix(err.Error(), "operation not permitted") {
@@ -83,16 +83,21 @@ func RunTest(t *testing.T, tunDeviceName, tunAddr, tunGW, tunMask string, mtu in
 		return
 	}
 
+	log.Debug("Writing to UDP")
 	_, err = uconn.Write([]byte("helloudp"))
 	if !assert.NoError(t, err) {
 		return
 	}
 
+	log.Debug("Reading from UDP")
 	_, err = io.ReadFull(uconn, b)
 	if !assert.NoError(t, err) {
 		return
 	}
+
+	log.Debug("Closing udp conn")
 	uconn.Close()
+	log.Debug("Closed udp conn")
 
 	log.Debugf("Dialing echo server with TCP at: %v", echoAddr)
 	conn, err := net.DialTimeout("tcp", echoAddr, 5*time.Second)
@@ -147,6 +152,7 @@ func tcpEcho(t *testing.T, closeCh <-chan interface{}, ip string) string {
 	go func() {
 		for {
 			conn, err := l.Accept()
+			log.Debugf("TCP echo accepted, error? %v", err)
 			if err != nil {
 				return
 			}

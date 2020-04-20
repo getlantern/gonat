@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -26,7 +27,7 @@ func (s *server) newConn(downFT FiveTuple, upFT FiveTuple) (*conn, error) {
 		upFT:            upFT,
 		toUpstream:      make(chan *IPPacket, s.opts.BufferDepth),
 		s:               s,
-		close:           make(chan interface{}),
+		closed:          make(chan interface{}),
 	}
 	ops.Go(c.writeToUpstream)
 	return c, nil
@@ -76,7 +77,8 @@ type conn struct {
 	toUpstream chan *IPPacket
 	s          *server
 	lastActive int64
-	close      chan interface{}
+	closeOnce  sync.Once
+	closed     chan interface{}
 }
 
 func (c *conn) writeToUpstream() {
@@ -94,10 +96,13 @@ func (c *conn) writeToUpstream() {
 			c.s.bufferPool.PutSlice(pkt.Raw)
 			if err != nil {
 				log.Errorf("Error writing upstream: %v", err)
+				c.Close()
+				// Wait for conn to have actually been closed
+				<-c.closed
 				return
 			}
 			c.markActive()
-		case <-c.close:
+		case <-c.closed:
 			return
 		}
 	}
@@ -113,10 +118,20 @@ func (c *conn) timeSinceLastActive() time.Duration {
 
 func (c *conn) Close() error {
 	select {
-	case <-c.close:
-		return nil
+	case <-c.closed:
+		// already closed
 	default:
-		close(c.close)
-		return nil
+		// Ask server to close this conn so that it happens in the dispatch loop
+		c.s.requestCloseConn(c)
 	}
+	return nil
+}
+
+func (c *conn) doClose() bool {
+	closed := false
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		closed = true
+	})
+	return closed
 }

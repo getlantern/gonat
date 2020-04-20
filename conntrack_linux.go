@@ -25,7 +25,11 @@ func (s *server) createConntrackEntry(upFT FiveTuple) error {
 func (s *server) deleteConntrackEntry(upFT FiveTuple) {
 	flow := s.ctFlowFor(false, upFT)
 	if err := s.ctrack.Delete(flow); err != nil {
-		log.Errorf("Unable to delete conntrack entry for %v: %v", upFT, err)
+		if log.IsTraceEnabled() {
+			// The below error is expected if the remote end closed the connection already, because
+			// the OS automatically deletes the conntrack entry if it received an RST packet.
+			log.Errorf("Unable to delete conntrack entry for %v: %v", upFT, err)
+		}
 	}
 }
 

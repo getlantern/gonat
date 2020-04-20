@@ -23,11 +23,13 @@ type server struct {
 	ctTimeout          uint32
 	randomPortSequence []uint16
 	portIndexes        map[uint8]map[Addr]int
+	numConns           int
 	connsByDownFT      map[FiveTuple]*conn
 	connsByUpFT        map[FiveTuple]*conn
 	fromDownstream     chan *IPPacket
 	toDownstream       chan *IPPacket
 	fromUpstream       chan *IPPacket
+	closingConns       chan *conn
 	closedConns        chan *conn
 	close              chan interface{}
 	closed             chan interface{}
@@ -72,6 +74,7 @@ func NewServer(downstream ReadWriter, opts *Opts) (Server, error) {
 		fromDownstream:     make(chan *IPPacket, opts.BufferDepth),
 		toDownstream:       make(chan *IPPacket, opts.BufferDepth),
 		fromUpstream:       make(chan *IPPacket, opts.BufferDepth),
+		closingConns:       make(chan *conn, opts.BufferDepth),
 		closedConns:        make(chan *conn, opts.BufferDepth),
 		close:              make(chan interface{}),
 		closed:             make(chan interface{}),
@@ -80,6 +83,9 @@ func NewServer(downstream ReadWriter, opts *Opts) (Server, error) {
 }
 
 func (s *server) Serve() error {
+	s.opts.StatsTracker.serverStarted()
+	defer s.opts.StatsTracker.serverClosed()
+
 	var err error
 	s.tcpSocket, err = createSocket(FiveTuple{IPProto: syscall.IPPROTO_TCP, Src: Addr{s.opts.IFAddr, 0}})
 	if err != nil {
@@ -109,11 +115,6 @@ func (s *server) Serve() error {
 
 func (s *server) dispatch() {
 	defer func() {
-		for _, c := range s.connsByDownFT {
-			c.Close()
-			s.deleteConn(c)
-			s.deleteConntrackEntry(c.upFT)
-		}
 		close(s.toDownstream)
 		s.tcpSocket.Close()
 		s.udpSocket.Close()
@@ -127,15 +128,52 @@ func (s *server) dispatch() {
 	for {
 		select {
 		case pkt := <-s.fromDownstream:
+			log.Tracef("Got packet from downstream: %v", pkt.FT())
 			s.onPacketFromDownstream(pkt)
 		case pkt := <-s.fromUpstream:
+			log.Tracef("Got packet from upstream: %v", pkt.FT())
 			s.onPacketFromUpstream(pkt)
+		case c := <-s.closingConns:
+			s.deleteAndCloseConn(c)
 		case c := <-s.closedConns:
-			s.deleteConntrackEntry(c.upFT)
+			s.finalizeConn(c)
 		case <-reapTicker.C:
 			s.reapIdleConns()
 		case <-s.close:
-			return
+			if s.numConns == 0 {
+				// All connections already closed
+				return
+			}
+
+			// Close all connections
+			for _, c := range s.connsByDownFT {
+				s.deleteAndCloseConn(c)
+			}
+
+			// Then enter a special dispatch loop that handles closed cleanup
+			closeTimeout := s.opts.IdleTimeout * 2
+			closeTimer := time.NewTimer(closeTimeout)
+			for {
+				select {
+				case c := <-s.closingConns:
+					c.s.deleteAndCloseConn(c)
+				case c := <-s.closedConns:
+					s.finalizeConn(c)
+					if s.numConns == 0 {
+						// There are no more connections to clean up, we're done dispatching!
+						return
+					}
+				case <-reapTicker.C:
+					s.reapIdleConns()
+				case <-closeTimer.C:
+					log.Errorf("Failed to close server within %v, forcibly cleaning up %d connections and stopping dispatch", closeTimeout, len(s.connsByDownFT))
+					for _, c := range s.connsByDownFT {
+						s.deleteAndCloseConn(c)
+						s.finalizeConn(c)
+					}
+					return
+				}
+			}
 		}
 	}
 }
@@ -149,7 +187,7 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 
 		if pkt.HasTCPFlag(TCPFlagRST) {
 			if c != nil {
-				c.Close()
+				s.deleteAndCloseConn(c)
 			}
 			return
 		}
@@ -167,10 +205,11 @@ func (s *server) onPacketFromDownstream(pkt *IPPacket) {
 				s.dropPacket(pkt)
 				return
 			}
+			s.numConns++
 			s.connsByDownFT[downFT] = c
 			s.connsByUpFT[upFT] = c
 			c.markActive()
-			s.opts.StatsTracker.addConn(pkt.IPProto)
+			s.opts.StatsTracker.openedConn(pkt.IPProto)
 		}
 		select {
 		case c.toUpstream <- pkt:
@@ -246,26 +285,32 @@ func (s *server) assignPort(downFT FiveTuple) (upFT FiveTuple, err error) {
 }
 
 func (s *server) reapIdleConns() {
-	var connsToClose []*conn
 	for _, c := range s.connsByDownFT {
 		if c.timeSinceLastActive() > s.opts.IdleTimeout {
-			connsToClose = append(connsToClose, c)
-			s.deleteConn(c)
+			s.deleteAndCloseConn(c)
 		}
-	}
-	if len(connsToClose) > 0 {
-		// close conns on a goroutine to avoid tying up main dispatch loop
-		ops.Go(func() {
-			for _, c := range connsToClose {
-				c.Close()
-			}
-		})
 	}
 }
 
-func (s *server) deleteConn(c *conn) {
-	delete(s.connsByDownFT, c.downFT)
-	delete(s.connsByUpFT, c.upFT)
+func (s *server) requestCloseConn(c *conn) {
+	s.closingConns <- c
+}
+
+func (s *server) deleteAndCloseConn(c *conn) {
+	// Only delete the conn from our tracking maps if we actually closed it. It's possible that
+	// an already closed connection will attempt to double close, in which case we don't want
+	// to delete what's in the map because at this point it may contain a new, live connection
+	// with the same five tuple.
+	if c.doClose() {
+		delete(s.connsByDownFT, c.downFT)
+		delete(s.connsByUpFT, c.upFT)
+	}
+}
+
+func (s *server) finalizeConn(c *conn) {
+	s.deleteConntrackEntry(c.upFT)
+	s.opts.StatsTracker.closedConn(c.upFT.IPProto)
+	s.numConns--
 }
 
 // readFromDownstream reads all IP packets from downstream clients.
@@ -341,6 +386,7 @@ func (s *server) Close() error {
 	case <-s.close:
 		// already closed
 	default:
+		s.opts.StatsTracker.startClosingServer()
 		close(s.close)
 	}
 	<-s.closed
