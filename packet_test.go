@@ -18,7 +18,7 @@ func TestTCP(t *testing.T) {
 	}
 
 	pkt, err := parseIPPacket(bpool.WrapByteSlice(raw, 0))
-	if !assert.NoError(t, err) {
+	if !assert.NoError(t, err, "Packet failed to parse") {
 		return
 	}
 
@@ -27,9 +27,40 @@ func TestTCP(t *testing.T) {
 
 	pkt.recalcIPChecksum()
 	pkt.recalcTCPChecksum()
-	expectedIPChecksum, expectedTCPChecksum := checksumsViaGoPacket(raw)
+	expectedIPChecksum, expectedTCPChecksum := checksumsViaGoPacket(raw, false)
 	assert.Equal(t, expectedIPChecksum, pkt.ipChecksum())
 	assert.Equal(t, expectedTCPChecksum, pkt.tcpChecksum())
+}
+
+func TestUDP(t *testing.T) {
+	raw, err := hex.DecodeString("4500001f3d700000401100007f0000017f000005ee641f40000bfe2268690a")
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	pkt, err := parseIPPacket(bpool.WrapByteSlice(raw, 0))
+	if !assert.NoError(t, err, "Packet failed to parse") {
+		return
+	}
+
+	assert.Equal(t, "127.0.0.1:61028", pkt.FT().Src.String())
+	assert.Equal(t, "127.0.0.5:8000", pkt.FT().Dst.String())
+
+	pkt.recalcIPChecksum()
+	pkt.recalcUDPChecksum()
+	expectedIPChecksum, expectedUDPChecksum := checksumsViaGoPacket(raw, true)
+	assert.Equal(t, expectedIPChecksum, pkt.ipChecksum())
+	assert.Equal(t, expectedUDPChecksum, pkt.udpChecksum())
+}
+
+func TestUDPTruncated(t *testing.T) {
+	raw, err := hex.DecodeString("4500001f3d700000401100007f0000017f000005ee641f40000b")
+	if assert.NoError(t, err) {
+		return
+	}
+
+	_, err = parseIPPacket(bpool.WrapByteSlice(raw, 0))
+	assert.Error(t, err, "UDP packet with truncated HDP header should fail to parse")
 }
 
 func TestHasRST(t *testing.T) {
@@ -54,39 +85,51 @@ func TestHasRST(t *testing.T) {
 	assert.False(t, pkt.HasTCPFlag(TCPFlagRST))
 }
 
-// for some reason, the TCP checksum in the test data doesn't match what's calculated by RFC 793,
+// for some reason, the checksum in the test data doesn't match what's calculated by RFC 793,
 // so we round-trip through gopacket to calculate the expected TCP checksum
-func checksumsViaGoPacket(data []byte) (uint16, uint16) {
-	packet, ip, tcp := gopacketLayers(data)
-	if ip == nil || tcp == nil {
+func checksumsViaGoPacket(data []byte, protoUDP bool) (uint16, uint16) {
+	packet, ip, tcp, udp := gopacketLayers(data)
+	if ip == nil || (!protoUDP && tcp == nil) || (protoUDP && udp == nil) {
 		return 0, 0
 	}
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
 		ComputeChecksums: true,
 	}
-	tcp.SetNetworkLayerForChecksum(ip)
+	if protoUDP {
+		udp.SetNetworkLayerForChecksum(ip)
+	} else {
+		tcp.SetNetworkLayerForChecksum(ip)
+	}
 	err := gopacket.SerializePacket(buf, opts, packet)
 	if err != nil {
 		log.Error(err)
 		return 0, 0
 	}
-	_, ip, tcp = gopacketLayers(buf.Bytes())
-	if ip == nil || tcp == nil {
+	_, ip, tcp, udp = gopacketLayers(buf.Bytes())
+	if ip == nil || (!protoUDP && tcp == nil) || (protoUDP && udp == nil) {
 		return 0, 0
+	}
+
+	if protoUDP {
+		return ip.Checksum, udp.Checksum
 	}
 	return ip.Checksum, tcp.Checksum
 }
 
-func gopacketLayers(data []byte) (gopacket.Packet, *layers.IPv4, *layers.TCP) {
+func gopacketLayers(data []byte) (gopacket.Packet, *layers.IPv4, *layers.TCP, *layers.UDP) {
 	packet := gopacket.NewPacket(data, layers.LayerTypeIPv4, gopacket.Default)
 	if ipLayer := packet.Layer(layers.LayerTypeIPv4); ipLayer != nil {
 		ip, _ := ipLayer.(*layers.IPv4)
 		if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
 			tcp, _ := tcpLayer.(*layers.TCP)
-			return packet, ip, tcp
+			return packet, ip, tcp, nil
+		}
+		if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
+			udp, _ := udpLayer.(*layers.UDP)
+			return packet, ip, nil, udp
 		}
 	}
 
-	return nil, nil, nil
+	return nil, nil, nil, nil
 }

@@ -18,6 +18,9 @@ import (
 // TCPFlags are the different flags supported in the TCP header
 const (
 	TCPFlagRST = 0x04
+
+	tcpHeaderLength = 24
+	udpHeaderLength = 8
 )
 
 var (
@@ -63,6 +66,18 @@ func (pkt *IPPacket) parseV4() (*IPPacket, error) {
 	pkt.IPProto = uint8(pkt.Header[9])
 	pkt.SrcAddr = &net.IPAddr{IP: net.IP(pkt.Header[12:16])}
 	pkt.DstAddr = &net.IPAddr{IP: net.IP(pkt.Header[16:20])}
+
+	payloadLength := len(pkt.Payload)
+	switch pkt.IPProto {
+	case syscall.IPPROTO_TCP:
+		if payloadLength < tcpHeaderLength {
+			return pkt, errors.New("TCP Packet too short: (%d < %d)", payloadLength, tcpHeaderLength)
+		}
+	case syscall.IPPROTO_UDP:
+		if payloadLength < udpHeaderLength {
+			return pkt, errors.New("UDP Packet too short: (%d < %d)", payloadLength, udpHeaderLength)
+		}
+	}
 
 	return pkt, nil
 }
