@@ -3,9 +3,9 @@ module github.com/getlantern/gonat
 go 1.12
 
 require (
-	github.com/getlantern/errors v0.0.0-20190325191628-abdb3e3e36f7
+	github.com/getlantern/errors v1.0.1
 	github.com/getlantern/fdcount v0.0.0-20190912142506-f89afd7367c4
-	github.com/getlantern/golog v0.0.0-20190830074920-4ef2e798c2d7
+	github.com/getlantern/golog v0.0.0-20200929154820-62107891371a
 	github.com/getlantern/gotun v0.0.0-20190809092752-6d35bb1397ee
 	github.com/getlantern/grtrack v0.0.0-20160824195228-cbf67d3fa0fd
 	github.com/getlantern/mtime v0.0.0-20200417132445-23682092d1f7 // indirect
